@@ -1,0 +1,53 @@
+# ---- Secrets: never commit credentials -------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials.json
+
+# ---- Python ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Node / Next.js ---------------------------------------------------
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+
+# ---- Runtime ----------------------------------------------------------
+.run/
+*.log
+tmp/
+dist/
+build/
+
+# ---- Local databases --------------------------------------------------
+*.sqlite
+*.sqlite3
+pgdata/
+neodata/
+
+# ---- Editor / OS ------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ---- Index / agent scratch -------------------------------------------
+.benchmarks/
+.smp/

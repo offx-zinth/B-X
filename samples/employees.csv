@@ -1,0 +1,5 @@
+employee_id,name,role,shift,daily_capacity
+E1,Ravi Kumar,Line Operator,Morning,120
+E2,Meena S,Line Operator,Evening,110
+E3,Arun V,Supervisor,General,0
+E4,Priya D,QC Inspector,Morning,0

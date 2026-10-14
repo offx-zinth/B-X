@@ -1,0 +1,4 @@
+material_id,name,available_kg,required_per_unit,supplier_id
+M1,Steel Rod 8mm,5000,10,S1
+M2,Alloy Sheet 2mm,3200,6,S2
+M3,Polymer Granules,8000,2,S3

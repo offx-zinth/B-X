@@ -1,0 +1,4 @@
+supplier_id,name,location,lead_time_days,capacity_kg,cost_per_unit
+S1,ABC Metals,Chennai,4,5000,120
+S2,Kovai Alloys,Coimbatore,6,3200,112
+S3,Deccan Polymers,Hyderabad,3,8000,45

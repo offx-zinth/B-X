@@ -1,0 +1,5 @@
+[
+  {"product_id": "P1", "name": "Hex Bolt M12", "avg_value": 120, "material_id": "M1", "daily_capacity": 400},
+  {"product_id": "P2", "name": "Flat Washer 10mm", "avg_value": 85, "material_id": "M2", "daily_capacity": 350},
+  {"product_id": "P3", "name": "Nylon Bush", "avg_value": 200, "material_id": "M3", "daily_capacity": 150}
+]

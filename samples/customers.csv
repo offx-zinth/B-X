@@ -1,0 +1,5 @@
+customer_id,name,email,location,demand_units
+C1,Anjali Traders,anjali@traders.in,Madurai,180
+C2,Bala Enterprises,bala@enterprises.in,Trichy,240
+C3,Divya Stores,divya@stores.in,Salem,95
+C4,Karthik Mart,karthik@mart.in,Erode,310

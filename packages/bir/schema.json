@@ -1,0 +1,106 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BusinessIR",
+  "description": "Universal Business IR: Reality -> IR -> Graph. Versioned, immutable snapshots. Provenance is mandatory; confidence is explicit.",
+  "version": 1,
+  "primitives": [
+    "Entity", "Actor", "Resource", "Process", "Task", "Event",
+    "Transaction", "State", "Dependency", "Relationship",
+    "Capacity", "Constraint", "Metric", "Cost", "Location", "Decision"
+  ],
+  "types": [
+    "Entity", "Actor", "Resource", "Process", "Event", "State", "Transaction", "Dependency"
+  ],
+  "level": {
+    "description": "Provenance lifecycle. Inferred information is never presented as confirmed.",
+    "enum": ["CONFIRMED", "INFERRED", "USER_DEFINED", "AI_SUGGESTED"],
+    "ordering": ["AI_SUGGESTED", "INFERRED", "USER_DEFINED", "CONFIRMED"]
+  },
+  "required": ["ir_version", "id", "source_doc", "created_at", "nodes", "edges", "stats"],
+  "properties": {
+    "ir_version": { "type": "integer", "minimum": 1 },
+    "id": { "type": "string" },
+    "source_doc": { "type": "string" },
+    "table": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": { "type": "string" },
+          "name": { "type": "string" },
+          "kind": {
+            "type": "string",
+            "enum": ["Entity", "Actor", "Resource", "Process", "Task", "Event",
+                     "Transaction", "State", "Dependency", "Relationship",
+                     "Capacity", "Constraint", "Metric", "Cost", "Location", "Decision"]
+          },
+          "properties": {
+            "type": "object",
+            "description": "Universal business properties. Industry concepts are extensions of these primitives."
+          },
+          "state": { "type": "string" },
+          "provenance": { "type": "array", "items": { "$ref": "#/definitions/provenance" } },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "level": { "$ref": "#/definitions/level" }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_type", "target_type", "type"],
+        "properties": {
+          "id": { "type": "string" },
+          "source_type": { "type": "string" },
+          "target_type": { "type": "string" },
+          "type": { "type": "string" },
+          "properties": {
+            "type": "object",
+            "description": "Edges may carry quantity, capacity, cost, time, probability, conditions, formula."
+          },
+          "formula": { "type": ["string", "null"] },
+          "conditions": { "type": "object" },
+          "via": { "type": "string", "description": "Source column that evidenced this relationship" }
+        }
+      }
+    },
+    "measures": { "type": "array", "items": { "type": "string" } },
+    "stats": {
+      "type": "object",
+      "properties": {
+        "columns": { "type": "integer" },
+        "refs": { "type": "integer" },
+        "sample_rows": { "type": "integer" }
+      }
+    }
+  },
+  "definitions": {
+    "provenance": {
+      "type": "object",
+      "description": "Where a discovered fact came from. Users must always be able to trace it.",
+      "required": ["source_file", "extraction_method", "confidence", "level", "created_at"],
+      "properties": {
+        "source_file": { "type": "string" },
+        "source_type": { "type": "string", "enum": ["file", "api", "connector", "manual", "demo"] },
+        "source_record": { "type": "string" },
+        "sheet": { "type": "string" },
+        "source_row": { "type": "string" },
+        "source_column": { "type": "string" },
+        "source_timestamp": { "type": "string", "format": "date-time" },
+        "extraction_method": {
+          "type": "string",
+          "enum": ["heuristic", "column-classification", "manual", "ai-suggestion", "seed"]
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "level": { "$ref": "#/definitions/level" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}
