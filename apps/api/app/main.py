@@ -14,6 +14,7 @@ except ImportError:  # local test env without slowapi: degrade to no rate limiti
 from .routers import auth, ingest, graph, formulas, simulations, ai, dashboard, reports, system
 from .core.observability import ObservabilityMiddleware
 from .core.store import backend, store_error
+from .core.config import settings
 
 limiter = _LIMITER
 
@@ -28,7 +29,7 @@ if _HAS_LIMITER:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
 )

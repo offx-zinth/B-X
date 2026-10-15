@@ -10,7 +10,8 @@ from ..services import compiler as comp, simulation as sim, formula_engine as bf
 TOOLS = ["query_graph","inspect_node","find_dependencies","find_affected_nodes","trace_path",
            "get_metric","create_formula","validate_formula","create_scenario","modify_scenario",
            "run_simulation","compare_simulations","find_bottlenecks","find_risks",
-           "suggest_optimization","generate_report"]
+           "suggest_optimization","generate_report","forecast","list_forecast_models",
+           "describe_ontology"]
 
 
 def explain_simulation(ctx, changes: list[dict], result: dict, subject: str = "the change") -> dict:
@@ -328,6 +329,36 @@ def optimize(ctx, goal: str, max_cost_pct: float = 5.0) -> dict:
 
 def suggest_optimization(ctx, goal: str, max_cost_pct: float = 5.0) -> dict:
     return optimize(ctx, goal, max_cost_pct)
+
+
+def forecast(ctx, model: str = "moving_average", target: str = "",
+             horizon: int = 30, series: list | None = None) -> dict:
+    """Pluggable forecasting tool. Estimates future inputs for simulation.
+
+    When no explicit series is given, the live value of `target`
+    (Type.property) seeds a flat history so small businesses (tea shop with
+    no warehouse of history) still get a usable baseline forecast.
+    """
+    from . import forecast as fc
+    hist: list[float] = []
+    if series:
+        hist = [float(v) for v in series if isinstance(v, (int, float))]
+    elif target:
+        live = live_model(ctx)
+        if target in live and isinstance(live[target], (int, float)):
+            hist = [float(live[target])] * 7
+    out = fc.run(model or "moving_average", hist, int(horizon or 30), target or "")
+    return {**out, "note": "Forecast is an input to simulation, not a simulation result. Run it through run_simulation to evaluate impact."}
+
+
+def list_forecast_models(ctx) -> dict:
+    from . import forecast as fc
+    return {"models": fc.list_models()}
+
+
+def describe_ontology(ctx) -> dict:
+    from ..core.ontology import describe
+    return describe()
 
 def generate_report(ctx) -> dict:
     from datetime import datetime, timezone

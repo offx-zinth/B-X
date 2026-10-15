@@ -1,0 +1,4 @@
+item,available,required_per_unit,supplier_id,unit_cost
+Milk,200,1,MS1,30
+Sugar,150,1,MS1,10
+TeaPowder,80,1,MS2,45

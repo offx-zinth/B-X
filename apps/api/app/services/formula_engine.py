@@ -160,11 +160,200 @@ def dependencies_of(expr: str) -> list[str]:
     return extract_refs(expr)
 
 
-def validate_expression(expr: str) -> dict:
+# --- Strict unit checking -------------------------------------------------
+# Families: quantity, time, currency, ratio, unknown. '+'/'-' and comparisons
+# require the same known family; '*'/'/' may combine families (e.g.
+# quantity * currency -> currency). Unknown units are permissive so legacy
+# formulas without metadata keep working — only KNOWN incompatibilities
+# (hours + rupees) are blocked.
+UNIT_FAMILIES = ("quantity", "time", "currency", "ratio", "unknown")
+
+PROPERTY_UNIT_FAMILY: dict[str, str] = {
+    "capacity": "quantity", "daily_capacity": "quantity",
+    "available": "quantity", "required": "quantity", "quantity": "quantity",
+    "demand": "quantity", "fulfilled": "quantity", "fulfillable": "quantity",
+    "backlog": "quantity", "stock": "quantity",
+    "lead_time": "time", "duration": "time", "hours": "time", "days": "time",
+    "cycle_time": "time", "delivery_time": "time",
+    "avg_value": "currency", "unit_cost": "currency", "cost": "currency",
+    "price": "currency", "revenue": "currency", "total": "currency",
+    "outstanding": "currency", "overdue": "currency",
+    "utilization": "ratio", "cover": "ratio",
+}
+
+_CURRENCY_HINTS = ("cost", "price", "revenue", "value", "inr", "rs", "rupees", "usd")
+_TIME_HINTS = ("lead_time", "duration", "hours", "days", "cycle_time", "delivery_time", "time")
+
+
+def infer_ref_family(ref: str, unit_lookup: dict[str, str] | None = None) -> str:
+    """Resolve a Type.property ref to a unit family via explicit lookup, else name heuristics."""
+    if unit_lookup and ref in unit_lookup:
+        u = str(unit_lookup[ref]).strip().lower()
+        if u in UNIT_FAMILIES:
+            return u
+        # map concrete units to families
+        if any(h in u for h in ("inr", "rs", "rupee", "usd", "$")):
+            return "currency"
+        if any(h in u for h in ("hour", "day", "min", "sec", "time")):
+            return "time"
+        if any(h in u for h in ("qty", "unit", "cup", "serving", "item", "pcs")):
+            return "quantity"
+        if u in ("ratio", "pct", "percent", "%"):
+            return "ratio"
+        return "unknown"
+    low_full = ref.lower() if "." not in ref else ref.lower()
+    prop = ref.split(".")[-1].lower() if "." in ref else ref.lower()
+    typ = ref.split(".")[0].lower() if "." in ref else ""
+    if prop in PROPERTY_UNIT_FAMILY:
+        return PROPERTY_UNIT_FAMILY[prop]
+    # Type-level hints: Cost.production, Revenue.total are currency even when
+    # the property name itself is generic.
+    if any(h in typ for h in ("cost", "revenue", "price", "payment", "margin")):
+        return "currency"
+    if any(h in typ for h in ("time", "duration", "lead")):
+        return "time"
+    if any(h in low_full for h in _CURRENCY_HINTS):
+        return "currency"
+    if any(h in low_full for h in _TIME_HINTS):
+        return "time"
+    return "unknown"
+
+
+def _check_same_family(a: str, b: str) -> bool:
+    if a == "unknown" or b == "unknown":
+        return True
+    return a == b
+
+
+def validate_units(expr: str, unit_lookup: dict[str, str] | None = None) -> dict:
+    """Static unit check. Returns {ok, error, families}.
+
+    Strict: known incompatible families on '+'/'-'/'MIN'/'MAX'/comparisons fail.
+    Unknown units are permissive (legacy formulas keep working).
+    """
+    try:
+        toks = tokenize(expr)
+    except Exception as e:
+        return {"ok": False, "error": str(e), "families": {}}
+
+    class UParser:
+        def __init__(self, tokens):
+            self.t = tokens; self.p = 0
+        def peek(self): return self.t[self.p] if self.p < len(self.t) else None
+        def eat(self, v=None):
+            cur = self.peek()
+            if cur is None: raise ValueError("unexpected end")
+            if v is not None and cur != v: raise ValueError(f"expected {v} got {cur}")
+            self.p += 1; return cur
+        def parse(self):
+            fam = self.cmp()
+            if self.peek() is not None: raise ValueError(f"unexpected token {self.peek()}")
+            return fam
+        def cmp(self):
+            l = self.add()
+            while self.peek() in (">", "<", ">=", "<=", "=", "==", "!="):
+                op = self.eat(); r = self.add()
+                if not _check_same_family(l, r):
+                    raise ValueError(f"unit mismatch: cannot compare {l} {op} {r}")
+                l = "ratio"  # comparisons yield boolean/ratio
+            return l
+        def add(self):
+            l = self.mul()
+            while self.peek() in ("+", "-"):
+                op = self.eat(); r = self.mul()
+                if not _check_same_family(l, r):
+                    raise ValueError(f"unit mismatch: cannot apply '{op}' to {l} and {r}")
+                l = l if l != "unknown" else r
+            return l
+        def mul(self):
+            l = self.un()
+            while self.peek() in ("*", "/"):
+                op = self.eat(); r = self.un()
+                # '*'/'/' may combine families (quantity * currency -> currency,
+                # stock / per-unit requirement -> producible quantity). Division
+                # is intentionally permissive (unknown) so stock/requirement
+                # patterns don't false-positive; '+'/'-' stay strict.
+                if op == "*":
+                    if "currency" in (l, r):
+                        l = "currency"
+                    elif l == "unknown" or r == "unknown":
+                        l = "unknown"
+                    else:
+                        l = "unknown"  # quantity*quantity shape varies; stay permissive
+                else:  # '/'
+                    if "currency" in (l, r) and l != r:
+                        l = "currency" if l == "currency" else "unknown"
+                    else:
+                        l = "unknown"
+                # incompatible multiply is allowed (quantity * currency)
+            return l
+        def un(self):
+            if self.peek() == "-": self.eat(); return self.un()
+            if self.peek() == "+": self.eat(); return self.un()
+            return self.atom()
+        def atom(self):
+            cur = self.peek()
+            if cur is None: raise ValueError("unexpected end in atom")
+            if re.fullmatch(r"\d+\.?\d*", cur or ""):
+                self.eat(); return "unknown"  # bare numbers are dimensionless
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", cur or ""):
+                name = self.eat()
+                if self.peek() == "(":
+                    fname = name.upper()
+                    self.eat("("); argfams = []
+                    if self.peek() != ")":
+                        argfams.append(self.cmp())
+                        while self.peek() == ",":
+                            self.eat(","); argfams.append(self.cmp())
+                    self.eat(")")
+                    if fname in ("MIN", "MAX", "SUM", "AVG"):
+                        base = next((f for f in argfams if f != "unknown"), "unknown")
+                        for f in argfams:
+                            if not _check_same_family(base, f):
+                                raise ValueError(f"unit mismatch in {fname}: {argfams}")
+                        return base
+                    if fname in ("CLAMP",):
+                        for f in argfams:
+                            if not _check_same_family(argfams[0], f):
+                                raise ValueError(f"unit mismatch in CLAMP: {argfams}")
+                        return argfams[0] if argfams else "unknown"
+                    if fname in ("IF",):
+                        # IF(cond, then, else): branches must match
+                        if len(argfams) == 3 and not _check_same_family(argfams[1], argfams[2]):
+                            raise ValueError(f"unit mismatch in IF branches: {argfams[1]} vs {argfams[2]}")
+                        return argfams[1] if len(argfams) == 3 else "unknown"
+                    return "unknown"  # RATE/DELTA/ABS/ROUND/COUNT are family-polymorphic
+                if "." in name:
+                    return infer_ref_family(name, unit_lookup)
+                raise ValueError(f"bare identifier {name}; use Type.property")
+            if cur == "(":
+                self.eat("("); v = self.cmp(); self.eat(")"); return v
+            raise ValueError(f"unexpected {cur}")
+
+    try:
+        fams = {r: infer_ref_family(r, unit_lookup) for r in extract_refs(expr)}
+        result_fam = UParser(toks).parse()
+        return {"ok": True, "error": None, "families": fams, "result_family": result_fam}
+    except ValueError as e:
+        return {"ok": False, "error": str(e),
+                "families": {r: infer_ref_family(r, unit_lookup) for r in extract_refs(expr)}}
+
+
+def validate_expression(expr: str, unit_lookup: dict[str, str] | None = None) -> dict:
     """Lightweight validation without a context. Returns {ok, dependencies, error}."""
     try:
         deps = extract_refs(expr)
         evaluate(expr, {})
+        if unit_lookup is not None:
+            u = validate_units(expr, unit_lookup)
+            if not u["ok"]:
+                return {"ok": False, "dependencies": deps, "error": u["error"]}
+        else:
+            # Always run heuristic unit check: blocks known incompatibilities
+            # (hours + rupees) while letting unknown-unit legacy formulas pass.
+            u = validate_units(expr, None)
+            if not u["ok"]:
+                return {"ok": False, "dependencies": deps, "error": u["error"]}
         return {"ok": True, "dependencies": deps, "error": None}
     except Exception as e:
         try:

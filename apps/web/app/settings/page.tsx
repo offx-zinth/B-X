@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { API } from "../../lib/api";
+import { API, headers } from "../../lib/api";
 import { Card, SectionTitle, Btn, Badge, ErrorNote } from "../../components/ui";
 
 export default function Settings() {
@@ -12,7 +12,7 @@ export default function Settings() {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("Viewer");
 
-  const H = () => ({ Authorization: `Bearer ${localStorage.getItem("xray_token")}` });
+  const H = () => headers();
 
   async function load() {
     try {

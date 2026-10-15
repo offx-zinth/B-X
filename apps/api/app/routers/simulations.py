@@ -81,10 +81,11 @@ def run(b: SimIn, ctx: dict = Depends(get_ctx)):
     return {"scenario": sc, "result": res, "run": run}
 
 @router.get("/")
-def history(ctx: dict = Depends(get_ctx)):
+def history(ctx: dict = Depends(get_ctx), limit: int = 50, offset: int = 0):
     runs = list_all("simulation_runs", ctx)
     runs.sort(key=lambda r: r.get("id", ""), reverse=True)
-    return runs[:50]
+    limit = max(1, min(int(limit or 50), 200)); offset = max(0, int(offset or 0))
+    return runs[offset:offset + limit]
 
 @router.get("/{run_id}")
 def one(run_id: str, ctx: dict = Depends(get_ctx)):

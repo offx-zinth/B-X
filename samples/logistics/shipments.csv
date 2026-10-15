@@ -1,0 +1,7 @@
+shipment_id,origin,destination,weight_kg,vehicle_id,driver_id,date,price
+SH1001,Chennai,Madurai,800,V1,DR1,2026-09-01,12000
+SH1002,Chennai,Trichy,500,V2,DR2,2026-09-01,8000
+SH1003,Coimbatore,Salem,1200,V1,DR1,2026-09-02,15000
+SH1004,Madurai,Erode,300,V3,DR3,2026-09-02,6000
+SH1005,Chennai,Salem,900,V2,DR2,2026-09-03,13000
+SH1006,Trichy,Madurai,400,V3,DR3,2026-09-03,7000

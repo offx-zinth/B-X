@@ -88,8 +88,10 @@ async def upload(f: UploadFile, ctx: dict = Depends(get_ctx)):
             "stats": f"discovered {len(compiled['nodes'])} types, {len(compiled['edges'])} rels from {f.filename}"}
 
 @router.get("/sources")
-def sources(ctx: dict = Depends(get_ctx)):
-    return list_all("data_sources", ctx)
+def sources(ctx: dict = Depends(get_ctx), limit: int = 100, offset: int = 0):
+    rows = list_all("data_sources", ctx)
+    limit = max(1, min(int(limit or 100), 500)); offset = max(0, int(offset or 0))
+    return rows[offset:offset + limit]
 
 @router.get("/sources/{sid}")
 def source_one(sid: str, ctx: dict = Depends(get_ctx)):
@@ -106,4 +108,100 @@ def seed(ctx: dict = Depends(get_ctx)):
         snap = ver.snapshot(ctx, source="seed")
         out["graph_version"] = snap.get("version")
         auditlog.record(ctx, "ingest.seed", "seed:acme", after=out)
+    return out
+
+
+@router.post("/seed-tea-shop")
+def seed_tea(ctx: dict = Depends(get_ctx)):
+    """Tea-shop reference graph. Same 14-primitive engine as the factory."""
+    RBAC.require(_user(ctx), "ingest.write")
+    out = seedsvc.seed_tea_shop(ctx, insert, list_all)
+    if out.get("seeded"):
+        snap = ver.snapshot(ctx, source="tea-seed")
+        out["graph_version"] = snap.get("version")
+        auditlog.record(ctx, "ingest.seed", "seed:tea", after=out)
+    return out
+
+
+@router.get("/sample-catalog")
+def sample_catalog(ctx: dict = Depends(get_ctx)):
+    """Businesses with one-click samples. Tenant-agnostic catalog, tenant-scoped loads."""
+    from ..services.samples import sample_files
+    catalog = []
+    for key, spec in seedsvc.BUSINESS_SEEDS.items():
+        files = sample_files(key)
+        catalog.append({"key": key, "label": spec["label"], "description": spec["description"],
+                        "files": files, "nodes": len(spec["nodes"]), "formulas": len(spec["formulas"])})
+    return {"businesses": catalog}
+
+
+@router.post("/seed/{business}")
+def seed_business(business: str, ctx: dict = Depends(get_ctx)):
+    """One-click executable graph for any catalog business. Merge, never clobber."""
+    RBAC.require(_user(ctx), "ingest.write")
+    try:
+        out = seedsvc.seed_business(business, ctx, insert, list_all, update)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if out.get("seeded"):
+        snap = ver.snapshot(ctx, source=f"seed:{business}")
+        out["graph_version"] = snap.get("version")
+        out["business"] = business
+        auditlog.record(ctx, "ingest.seed", f"seed:{business}", after=out)
+    return out
+
+
+@router.post("/load-sample/{business}")
+def load_sample(business: str, ctx: dict = Depends(get_ctx)):
+    """Load a business's sample CSVs through the REAL pipeline (parse → IR → compile),
+    then attach its executable formulas. Proves heterogeneous exports compile
+    into one graph instead of bypassing ingestion via seed-only nodes."""
+    RBAC.require(_user(ctx), "ingest.write")
+    import os
+    from ..services.samples import sample_paths
+    key = (business or "").lower()
+    if key not in seedsvc.BUSINESS_SEEDS:
+        raise HTTPException(400, f"unknown business '{business}'")
+    spec = seedsvc.BUSINESS_SEEDS[key]
+    try:
+        paths = sample_paths(key)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not paths:
+        raise HTTPException(404, f"no sample CSVs for '{business}'")
+    loaded: list[dict] = []
+    for p in paths:
+        try:
+            with open(p, "rb") as fh:
+                raw = fh.read()
+            cols, rows = ing.parse(os.path.basename(p), raw)
+        except Exception as e:
+            raise HTTPException(400, f"{os.path.basename(p)}: {e}")
+        table = os.path.splitext(os.path.basename(p))[0].lower()
+        ir = irs.detect_ir(table, cols, rows, os.path.basename(p))
+        compiled = comp.compile_ir(ir, ctx, insert, list_all, update)
+        src = insert("data_sources", ctx, {"filename": f"sample:{business}/{os.path.basename(p)}",
+                                           "kind": "sample", "status": "COMPLETED",
+                                           "row_count": len(rows), "columns": cols[:50]})
+        loaded.append({"file": os.path.basename(p), "source_id": src["id"],
+                       "nodes": len(compiled["nodes"]), "edges": len(compiled["edges"])})
+    # Attach executable formulas (approved) so the loaded graph simulates immediately.
+    existing_targets = {f.get("target") for f in list_all("formulas", ctx)}
+    added = 0
+    for target, expr in spec["formulas"]:
+        if target in existing_targets:
+            continue
+        from ..services import formula_engine as bfl
+        insert("formulas", ctx, {"target": target, "expression": expr,
+                                "dependencies": bfl.dependencies_of(expr),
+                                "status": "approved", "created_by": f"sample:{business}",
+                                "level": "CONFIRMED"})
+        added += 1
+    snap = ver.snapshot(ctx, source=f"load-sample:{business}")
+    out = {"business": business, "files_loaded": loaded, "formulas_added": added,
+           "graph_version": snap.get("version"),
+           "nodes": len(list_all("nodes", ctx)), "edges": len(list_all("edges", ctx))}
+    auditlog.record(ctx, "ingest.load_sample", f"sample:{business}", after=out)
     return out

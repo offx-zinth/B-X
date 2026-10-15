@@ -1,0 +1,4 @@
+staff_id,name,role,shift,daily_capacity
+D1,Dr Asha,Doctor,Morning,20
+D2,Dr Vikram,Doctor,Evening,16
+D3,Nurse Lata,Nurse,General,30

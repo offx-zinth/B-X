@@ -2,6 +2,14 @@
 from __future__ import annotations
 from . import formula_engine as bfl
 
+try:
+    from ..core.ontology import normalize_kind as _norm_kind, validate_edge_type as _validate_edge
+except Exception:  # offline/service import without package context
+    def _norm_kind(k):  # type: ignore
+        return (k.title() if k else "Entity")
+    def _validate_edge(t):  # type: ignore
+        return t
+
 def compile_ir(ir: dict, ctx: dict, store_insert, store_list=None, store_update=None) -> dict:
     """store_* injected for testability. Nodes merge by type within a tenant,
     so separate uploads interconnect: orders.csv + suppliers.csv share ONE
@@ -14,11 +22,18 @@ def compile_ir(ir: dict, ctx: dict, store_insert, store_list=None, store_update=
             known.setdefault(n["type"], n)
     for n in ir.get("nodes", []):
         normalized = n.get("properties") or {}
+        kind = _norm_kind(n.get("kind", "Entity"))
         if n["type"] in known:
             saved = known[n["type"]]
             if store_update:
                 props = dict(saved.get("properties") or {})
-                props.setdefault("kind", n.get("kind", "Entity"))
+                props.setdefault("kind", kind)
+                # Normalize legacy kinds already persisted (Metric/Location/...).
+                if props.get("kind") not in ("Entity", "Actor", "Resource", "Process",
+                                              "Task", "Event", "Transaction", "State",
+                                              "Dependency", "Flow", "Capacity",
+                                              "Constraint", "Time", "Cost"):
+                    props["kind"] = _norm_kind(props.get("kind"))
                 props["record_count"] = props.get("record_count", 0) + 1
                 # Never clobber an existing value with a re-discovered one.
                 for k, v in normalized.items():
@@ -28,7 +43,7 @@ def compile_ir(ir: dict, ctx: dict, store_insert, store_list=None, store_update=
             type_to_id[n["type"]] = saved["id"]; created_nodes.append(saved)
             continue
         obj = {"type": n["type"], "name": n["type"],
-               "properties": {"kind": n.get("kind", "Entity"), "examples": n.get("examples", [])[:1],
+               "properties": {"kind": kind, "examples": n.get("examples", [])[:1],
                               "record_count": 1, **normalized},
                "state": "active", "confidence": 0.85}
         saved = store_insert("nodes", ctx, obj)
@@ -41,9 +56,10 @@ def compile_ir(ir: dict, ctx: dict, store_insert, store_list=None, store_update=
     for e in ir.get("edges", []):
         s = type_to_id.get(e["source_type"]); t = type_to_id.get(e["target_type"])
         if not s or not t: continue
-        if (s, t, e["type"]) in seen_edges: continue
-        seen_edges.add((s, t, e["type"]))
-        saved = store_insert("edges", ctx, {"source_node": s, "target_node": t, "type": e["type"], "properties": {"via": e.get("via","")}})
+        etype = _validate_edge(e["type"])
+        if (s, t, etype) in seen_edges: continue
+        seen_edges.add((s, t, etype))
+        saved = store_insert("edges", ctx, {"source_node": s, "target_node": t, "type": etype, "properties": {"via": e.get("via","")}})
         created_edges.append(saved)
     return {"nodes": created_nodes, "edges": created_edges}
 

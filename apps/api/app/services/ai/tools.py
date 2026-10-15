@@ -283,3 +283,25 @@ def compare_simulations(ctx: dict, a_changes: list, b_changes: list, duration_da
        "required": ["goal"]})
 def suggest_optimization(ctx: dict, goal: str, max_cost_pct: float = 5.0):
     return impl.suggest_optimization(ctx, goal, float(max_cost_pct or 5.0))
+
+
+@tool("forecast", "Estimate future values for a metric (demand, duration, cost) to use as simulation inputs. Forecasting estimates what may happen; run_simulation evaluates consequences.",
+      {"type": "object", "properties": {
+          "model": {"type": "string", "description": "registered forecaster, default moving_average"},
+          "target": {"type": "string", "description": "Type.property to forecast, e.g. Demand.quantity"},
+          "horizon": {"type": "integer", "description": "days ahead, 1..365"},
+          "series": {"type": "array", "items": {"type": "number"}, "description": "optional history; defaults to live value"}}})
+def forecast(ctx: dict, model: str = "moving_average", target: str = "", horizon: int = 30, series: list = None):
+    return impl.forecast(ctx, model or "moving_average", target or "", int(horizon or 30), series)
+
+
+@tool("list_forecast_models", "List registered forecasting models with versions and metrics.",
+      {"type": "object", "properties": {}})
+def list_forecast_models(ctx: dict):
+    return impl.list_forecast_models(ctx)
+
+
+@tool("describe_ontology", "The 14 core primitives: operational nodes, relationships, properties/rules, plus domain extensions.",
+      {"type": "object", "properties": {}})
+def describe_ontology(ctx: dict):
+    return impl.describe_ontology(ctx)

@@ -1,0 +1,4 @@
+item,available,required_per_unit,unit_cost
+Syringe,500,1,8
+GlucoseStrips,300,1,12
+Stent,20,1,45000

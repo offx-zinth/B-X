@@ -1,0 +1,6 @@
+patient_id,name,age,condition,demand_units
+P1,Ravi,45,fever,1
+P2,Meena,32,checkup,1
+P3,Arun,60,diabetes,2
+P4,Priya,28,checkup,1
+P5,Karthik,50,cardio,2

@@ -2,14 +2,20 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "BusinessIR",
   "description": "Universal Business IR: Reality -> IR -> Graph. Versioned, immutable snapshots. Provenance is mandatory; confidence is explicit.",
-  "version": 1,
+  "version": 2,
+  "core_14": ["ENTITY", "RESOURCE", "ACTOR", "PROCESS", "TASK", "EVENT", "TRANSACTION",
+              "DEPENDENCY", "FLOW", "STATE", "CAPACITY", "CONSTRAINT", "TIME", "COST"],
+  "operational_nodes": ["ENTITY", "RESOURCE", "ACTOR", "PROCESS", "TASK", "EVENT", "TRANSACTION"],
+  "relationships": ["DEPENDENCY", "FLOW"],
+  "edge_specializations": ["USES", "PRODUCES", "CONSUMES", "PERFORMED_BY", "TRIGGERS"],
+  "properties_rules": ["STATE", "CAPACITY", "CONSTRAINT", "TIME", "COST"],
   "primitives": [
-    "Entity", "Actor", "Resource", "Process", "Task", "Event",
-    "Transaction", "State", "Dependency", "Relationship",
-    "Capacity", "Constraint", "Metric", "Cost", "Location", "Decision"
+    "Entity", "Resource", "Actor", "Process", "Task", "Event",
+    "Transaction", "Dependency", "Flow",
+    "State", "Capacity", "Constraint", "Time", "Cost"
   ],
   "types": [
-    "Entity", "Actor", "Resource", "Process", "Event", "State", "Transaction", "Dependency"
+    "Entity", "Resource", "Actor", "Process", "Task", "Event", "Transaction"
   ],
   "level": {
     "description": "Provenance lifecycle. Inferred information is never presented as confirmed.",
@@ -34,9 +40,10 @@
           "name": { "type": "string" },
           "kind": {
             "type": "string",
-            "enum": ["Entity", "Actor", "Resource", "Process", "Task", "Event",
-                     "Transaction", "State", "Dependency", "Relationship",
-                     "Capacity", "Constraint", "Metric", "Cost", "Location", "Decision"]
+            "enum": ["Entity", "Resource", "Actor", "Process", "Task", "Event",
+                     "Transaction", "Dependency", "Flow",
+                     "State", "Capacity", "Constraint", "Time", "Cost",
+                     "Metric", "Location", "Decision", "Relationship"]
           },
           "properties": {
             "type": "object",

@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { API } from "../../lib/api";
+import { API, headers } from "../../lib/api";
 import { Card, SectionTitle, Btn, Badge, MetricStrip, ErrorNote, Skeleton } from "../../components/ui";
 
 export default function Reports() {
@@ -11,15 +11,18 @@ export default function Reports() {
   async function load() {
     setBusy(true); setErr("");
     try {
-      const H = { Authorization: `Bearer ${localStorage.getItem("xray_token")}` };
-      setR(await fetch(`${API}/reports/`, { headers: H }).then(r => { if (!r.ok) throw new Error("Report failed"); return r.json(); }));
+      setR(await fetch(`${API}/reports/`, { headers: headers() }).then(r => { if (!r.ok) throw new Error("Report failed"); return r.json(); }));
     } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   }
 
-  function exportCSV() {
-    const t = localStorage.getItem("xray_token");
-    window.open(`${API}/reports/export.csv`, "_blank");
-    void t;
+  async function exportCSV() {
+    try {
+      const r = await fetch(`${API}/reports/export.csv`, { headers: headers() });
+      if (!r.ok) throw new Error("Export failed");
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+    } catch (e: any) { setErr(e.message); }
   }
 
   const tone = (v: string) => v === "HIGH" ? "bad" : v === "MEDIUM" ? "warn" : "good";

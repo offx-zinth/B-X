@@ -1,0 +1,6 @@
+customer_id,name,plan,monthly_value,demand_units
+C1,Anjali Traders,Pro,4999,8
+C2,Bala Enterprises,Team,2999,12
+C3,Divya Stores,Starter,999,4
+C4,Karthik Mart,Enterprise,14999,20
+C5,Revathi Labs,Pro,4999,6

@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { API } from "../../lib/api";
+import { API, headers } from "../../lib/api";
 import { Card, SectionTitle, Badge, MetricStrip, ErrorNote, Skeleton } from "../../components/ui";
 
 export default function Dashboard() {
@@ -10,15 +10,15 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const t = localStorage.getItem("xray_token");
-    if (!t) { setLoading(false); setErr("Create an org on the Data page first."); return; }
-    fetch(`${API}/dashboard/`, { headers: { Authorization: `Bearer ${t}` } })
-      .then(r => { if (!r.ok) throw new Error("Dashboard load failed"); return r.json(); })
+    const t = headers()["Authorization"];
+    if (!t) { setLoading(false); setErr("Log in to view your workspace."); return; }
+    fetch(`${API}/dashboard/`, { headers: headers() })
+      .then(r => { if (r.status === 401 && typeof window !== "undefined") window.location.href = "/login"; if (!r.ok) throw new Error("Dashboard load failed"); return r.json(); })
       .then(setD).catch((e: any) => setErr(e.message)).finally(() => setLoading(false));
   }, []);
 
   if (loading) return <main className="mx-auto max-w-[1400px] px-6 pb-20 pt-12"><Skeleton className="h-24" /><div className="mt-4 grid gap-4 sm:grid-cols-3"><Skeleton className="h-24" /><Skeleton className="h-24" /><Skeleton className="h-24" /></div></main>;
-  if (err) return <main className="mx-auto max-w-[1400px] px-6 pb-20 pt-12"><ErrorNote msg={err} /><p className="mt-3 text-sm text-stone-500"><Link href="/" className="font-semibold text-pine-700">Go to Data →</Link></p></main>;
+  if (err) return <main className="mx-auto max-w-[1400px] px-6 pb-20 pt-12"><ErrorNote msg={err} /><p className="mt-3 text-sm text-stone-500"><Link href="/login" className="font-semibold text-pine-700">Go to login →</Link></p></main>;
 
   const bs = d.business_state || {};
   return (

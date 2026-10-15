@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "dev-secret-change-me"
     JWT_ALG: str = "HS256"
 
+    # --- frontend / CORS ---
+    # Comma-separated origins for production deployments behind a real domain.
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
+
     # --- AI provider abstraction ---
     # LLM_PROVIDER: gemini | openai | none (deterministic offline fallback)
     LLM_PROVIDER: str = "gemini"

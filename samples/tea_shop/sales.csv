@@ -1,0 +1,9 @@
+sale_id,item,quantity,price,brewer_id,supplier_id,date
+S1001,Cutting Chai,2,15,B1,MS1,2026-09-01
+S1002,Masala Chai,1,25,B1,MS1,2026-09-01
+S1003,Cutting Chai,4,15,B2,MS1,2026-09-02
+S1004,Filter Coffee,2,20,B2,MS2,2026-09-02
+S1005,Cutting Chai,6,15,B1,MS1,2026-09-03
+S1006,Masala Chai,3,25,B1,MS1,2026-09-03
+S1007,Filter Coffee,1,20,B2,MS2,2026-09-04
+S1008,Cutting Chai,5,15,B1,MS1,2026-09-04

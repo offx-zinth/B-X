@@ -44,6 +44,25 @@ DELTA(a, b)        # a - b
 Syntax errors, unknown functions and disallowed characters produce an explicit
 `error`; they never execute anything and never raise into a request handler.
 
+## Strict unit checking
+
+`validate_expression()` also enforces unit families:
+
+- `quantity` (capacity, available, demand, cups), `time` (lead_time,
+  cycle_time, days), `currency` (cost, price, revenue, INR), `ratio`, `unknown`.
+- `+`/`-`/comparisons/`MIN`/`MAX` require the same known family —
+  `lead_time + revenue` fails with `unit mismatch`.
+- `*`/`/` may combine families (`fulfillable * avg_value -> currency`).
+  Division is permissive so `available / required` never false-positives.
+- Bare numbers and unmapped refs are `unknown` and permissive, so legacy
+  formulas keep working. Only KNOWN incompatibilities are blocked.
+
+```text
+MIN(Supplier.capacity, Machine.capacity, ...)  # quantity + quantity -> ok
+Order.fulfillable * Order.avg_value              # quantity * currency -> ok
+Supplier.lead_time + Revenue.total               # time + currency -> REJECTED
+```
+
 ## Solver semantics
 
 Formulas are split into two layers by `simulation._order_and_split`:

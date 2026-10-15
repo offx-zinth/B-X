@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { API } from "../../lib/api";
+import { API, headers } from "../../lib/api";
 import { Card, SectionTitle, Btn, Badge, ErrorNote, EmptyState } from "../../components/ui";
 
 export default function Optimization() {
@@ -12,7 +12,7 @@ export default function Optimization() {
   async function run() {
     setBusy(true); setErr("");
     try {
-      const H = { Authorization: `Bearer ${localStorage.getItem("xray_token")}`, "Content-Type": "application/json" };
+      const H = { ...headers(), "Content-Type": "application/json" };
       const r = await fetch(`${API}/ai/optimize`, { method: "POST", headers: H, body: JSON.stringify({ question: goal }) }).then(r => {
         if (!r.ok) throw new Error("Optimization failed"); return r.json();
       });

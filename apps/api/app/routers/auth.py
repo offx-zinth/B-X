@@ -62,6 +62,24 @@ def me(ctx: dict = Depends(get_ctx)):
             "tenant_id": ctx["tenant_id"]}
 
 
+@router.get("/tenant")
+def tenant(ctx: dict = Depends(get_ctx)):
+    """Current tenant with usage counts for the workspace switcher."""
+    from ..core.store import list_all as _list
+    u = _current_user(ctx)
+    tname = ctx["tenant_id"]
+    for t in scan("tenants"):
+        if t.get("id") == ctx["tenant_id"]:
+            tname = t.get("name", tname)
+            break
+    return {"tenant_id": ctx["tenant_id"], "name": tname,
+            "email": u["email"], "role": u.get("role", "Viewer"),
+            "users": len(_list("users", ctx)),
+            "nodes": len(_list("nodes", ctx)), "edges": len(_list("edges", ctx)),
+            "formulas": len(_list("formulas", ctx)),
+            "sources": len(_list("data_sources", ctx))}
+
+
 @router.get("/users")
 def users(ctx: dict = Depends(get_ctx)):
     u = _current_user(ctx)

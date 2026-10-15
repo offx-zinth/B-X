@@ -1,69 +1,77 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { UploadSimple, PlugsConnected, Code, ArrowRight } from "@phosphor-icons/react";
-import { API } from "../lib/api";
+import { API, apiForm } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { Card, SectionTitle, Btn, Badge, MetricStrip, EmptyState, Skeleton, ErrorNote } from "../components/ui";
 
 type Source = { id: string; filename: string; row_count: number; status: string };
+type Biz = { key: string; label: string; description: string; files: string[]; nodes: number; formulas: number };
 
 const STEPS = ["Upload", "Normalize", "Compile", "Graph", "Rules", "Simulate", "Explain", "Report"];
 
 export default function Portal() {
+  const { session, loading: authLoading } = useAuth();
   const [sources, setSources] = useState<Source[]>([]);
+  const [catalog, setCatalog] = useState<Biz[]>([]);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
+  const [catalogErr, setCatalogErr] = useState("");
   const [loading, setLoading] = useState(true);
-  const [authed, setAuthed] = useState(false);
-  const [seeding, setSeeding] = useState(false);
+  const [busyBiz, setBusyBiz] = useState("");
 
-  async function seed() {
-    setSeeding(true); setErr("");
+  const load = useCallback(async () => {
+    if (!session) { setLoading(false); setSources([]); setCatalog([]); return; }
+    setErr(""); setCatalogErr("");
     try {
-      const r = await fetch(`${API}/ingest/seed`, {
-        method: "POST", headers: { Authorization: `Bearer ${localStorage.getItem("xray_token")}` },
-      }).then(r => { if (!r.ok) throw new Error("Seed failed"); return r.json(); });
-      setMsg(r.seeded ? `Demo graph ready — ${r.nodes} nodes, ${r.edges} edges, ${r.formulas} formulas.` : `Tenant already has data (${r.nodes} nodes).`);
-      load();
-    } catch (e: any) { setErr(e.message); } finally { setSeeding(false); }
-  }
-
-  async function load() {
-    const t = localStorage.getItem("xray_token");
-    if (!t) { setLoading(false); return; }
-    setAuthed(true);
-    try {
-      const s = await fetch(`${API}/ingest/sources`, { headers: { Authorization: `Bearer ${t}` } }).then(r => {
-        if (!r.ok) throw new Error("Could not load sources");
+      const H = { Authorization: `Bearer ${session.token}` };
+      const s = await fetch(`${API}/ingest/sources`, { headers: H }).then(async r => {
+        if (r.status === 401 && typeof window !== "undefined") window.location.href = "/login";
+        if (!r.ok) throw new Error(`Sources failed (${r.status}). Is the API running at ${API}?`);
         return r.json();
       });
       setSources(s);
-    } catch (e: any) { setErr(e.message); } finally { setLoading(false); }
-  }
+    } catch (e: any) {
+      setErr(e.message === "Failed to fetch" ? `Cannot reach the API at ${API}. Check the API is running and reachable from this browser.` : e.message);
+    } finally { setLoading(false); }
+    try {
+      const H = { Authorization: `Bearer ${session.token}` };
+      const cat = await fetch(`${API}/ingest/sample-catalog`, { headers: H }).then(async r => {
+        if (!r.ok) throw new Error(`Catalog failed (${r.status})`);
+        return r.json();
+      });
+      setCatalog(cat.businesses || []);
+    } catch (e: any) {
+      setCatalogErr(e.message === "Failed to fetch" ? `Cannot reach the API at ${API}.` : e.message);
+    }
+  }, [session]);
 
-  async function login() {
-    setErr("");
-    const r = await fetch(`${API}/auth/signup`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ org: "Acme Manufacturing", email: `demo-${Date.now()}@acme.co`, password: "secret123" }),
-    }).then(r => r.json()).catch(() => null);
-    if (r?.token) { localStorage.setItem("xray_token", r.token); setMsg(`Workspace ready — tenant ${r.tenant_id.slice(0, 8)}`); load(); }
-    else setErr("Signup failed. Is the API running at " + API + "?");
+  useEffect(() => { if (!authLoading) load(); }, [authLoading, load]);
+
+  async function loadBusiness(key: string, viaFiles: boolean) {
+    if (!session) return;
+    setBusyBiz(key); setErr(""); setMsg(`Loading ${key}…`);
+    try {
+      const H = { Authorization: `Bearer ${session.token}`, "Content-Type": "application/json" };
+      const path = viaFiles ? `/ingest/load-sample/${key}` : `/ingest/seed/${key}`;
+      const r = await fetch(`${API}${path}`, { method: "POST", headers: H }).then(async r => {
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+      });
+      setMsg(`${key}: ready — ${r.nodes ?? "?"} nodes, ${r.edges ?? "?"} edges. Open the workspace.`);
+      load();
+    } catch (e: any) { setErr(e.message); setMsg(""); } finally { setBusyBiz(""); }
   }
 
   async function upload(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]; if (!f) return;
     setErr(""); setMsg(`Parsing ${f.name}…`);
-    const fd = new FormData(); fd.append("f", f);
     try {
-      const r = await fetch(`${API}/ingest/upload`, {
-        method: "POST", headers: { Authorization: `Bearer ${localStorage.getItem("xray_token")}` }, body: fd,
-      }).then(r => { if (!r.ok) throw new Error("Upload failed"); return r.json(); });
+      const r = await apiForm("/ingest/upload", f);
       setMsg(r.stats); load();
     } catch (e: any) { setErr(e.message); setMsg(""); }
   }
-
-  useEffect(() => { load(); }, []);
 
   return (
     <main className="mx-auto max-w-[1400px] px-6 pb-20 pt-12">
@@ -71,16 +79,18 @@ export default function Portal() {
         <h1 className="balance font-display text-[44px] font-semibold leading-[1.05] tracking-tight text-stone-900">Give us your business data. Get back an operating graph.</h1>
         <p className="mt-4 max-w-[60ch] text-[15px] leading-relaxed text-stone-500">
           Upload exports from the tools you already use. X-Ray normalizes them into entities, processes and dependencies — the graph stays the source of truth.
+          {session && <span className="mt-1 block text-[13px]">Workspace: <b>{session.org || "—"}</b> · {session.email} · {session.role}</span>}
         </p>
       </div>
 
-      {!authed && !loading && (
+      {!session && !authLoading && (
         <Card className="rise-1 mt-8 flex flex-wrap items-center gap-4 p-6">
           <div className="min-w-[220px] flex-1">
-            <p className="font-display text-[15px] font-semibold text-stone-900">Create your demo organization</p>
-            <p className="mt-0.5 text-[13px] text-stone-500">One click provisions an isolated tenant. No SSO in the MVP.</p>
+            <p className="font-display text-[15px] font-semibold text-stone-900">Log in or create your organization</p>
+            <p className="mt-0.5 text-[13px] text-stone-500">Each organization is an isolated tenant — JWT + Row Level Security, enforced server-side.</p>
           </div>
-          <Btn onClick={login}><span className="inline-flex items-center gap-1.5">Create org and continue <ArrowRight size={14} weight="bold" /></span></Btn>
+          <Link href="/login"><Btn>Log in</Btn></Link>
+          <Link href="/signup"><Btn variant="ghost"><span className="inline-flex items-center gap-1.5">Sign up <ArrowRight size={14} weight="bold" /></span></Btn></Link>
         </Card>
       )}
 
@@ -93,9 +103,9 @@ export default function Portal() {
           <p className="mt-1 text-[13px] text-stone-500">CSV · XLSX · PDF · JSON — parsed into typed entities, not random nodes.</p>
           <label className="btn mt-5 grid cursor-pointer place-items-center rounded-2xl border border-dashed border-stone-300 bg-paper-50 px-4 py-12 text-center text-[13.5px] text-stone-600 hover:border-pine-600 hover:bg-pine-50/50">
             Drop a file or click to browse
-            <input type="file" className="sr-only" onChange={upload} disabled={!authed} />
+            <input type="file" className="sr-only" onChange={upload} disabled={!session} />
           </label>
-          {!authed && <p className="mt-2 text-xs text-stone-400">Create an org first to enable uploads.</p>}
+          {!session && <p className="mt-2 text-xs text-stone-400">Log in first to enable uploads.</p>}
         </Card>
         <div className="grid gap-4 lg:col-span-2">
           <Card className="rise-2 flex items-center gap-3.5 p-6 opacity-70">
@@ -118,6 +128,30 @@ export default function Portal() {
       {msg && <p className="mt-4 rounded-xl border border-pine-100 bg-pine-50 px-4 py-2.5 text-[13px] text-pine-700">{msg}</p>}
       {err && <div className="mt-4"><ErrorNote msg={err} /></div>}
 
+      <section className="mt-12">
+        <SectionTitle title="Sample businesses" hint="One click loads an executable graph — or loads the raw CSVs through the real parse → normalize → compile pipeline." />
+        {catalogErr && <div className="mt-3"><ErrorNote msg={catalogErr} /></div>}
+        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {catalog.map(b => (
+            <Card key={b.key} className="flex flex-col p-5">
+              <div className="flex items-center gap-2">
+                <p className="font-display text-[15px] font-semibold text-stone-900">{b.label}</p>
+                <Badge>{b.key}</Badge>
+                <span className="tnum ml-auto font-mono text-[11px] text-stone-400">{b.nodes}n · {b.formulas}f</span>
+              </div>
+              <p className="mt-1.5 min-h-[38px] text-[13px] text-stone-500">{b.description}</p>
+              <p className="tnum mt-1 font-mono text-[11px] text-stone-400">{b.files.join(", ") || "seed-only"}</p>
+              <div className="mt-3 flex gap-2">
+                <Btn disabled={!session || !!busyBiz} onClick={() => loadBusiness(b.key, false)}>{busyBiz === b.key ? "Loading…" : "Load graph"}</Btn>
+                {b.files.length > 0 && <Btn variant="ghost" disabled={!session || !!busyBiz} onClick={() => loadBusiness(b.key, true)}>Load CSVs</Btn>}
+              </div>
+            </Card>
+          ))}
+          {!catalog.length && !loading && !session && <p className="text-[13px] text-stone-400">Log in to see sample businesses.</p>}
+          {!catalog.length && !loading && session && !catalogErr && <p className="text-[13px] text-stone-400">No sample businesses returned.</p>}
+        </div>
+      </section>
+
       <div className="mt-12 grid gap-10 lg:grid-cols-[1fr_300px]">
         <section>
           <SectionTitle title="Data sources" hint="Each file is parsed, classified and compiled into graph types — never dumped as random nodes." />
@@ -125,12 +159,12 @@ export default function Portal() {
             {loading ? (
               <div className="space-y-2">{[0, 1, 2].map(i => <Skeleton key={i} className="h-12" />)}</div>
             ) : sources.length === 0 ? (
-              <EmptyState title="No data yet" body="Upload orders, inventory or suppliers to see the pipeline light up." action={<Link href="/workspace" className="inline-flex items-center gap-1 text-[13px] font-semibold text-pine-700 hover:text-pine-800">Open the workspace <ArrowRight size={13} weight="bold" /></Link>} />
+              <EmptyState title="No data yet" body="Upload orders, inventory or suppliers — or load a sample business above." action={<Link href="/workspace" className="inline-flex items-center gap-1 text-[13px] font-semibold text-pine-700 hover:text-pine-800">Open the workspace <ArrowRight size={13} weight="bold" /></Link>} />
             ) : (
               <ul className="divide-y divide-stone-200 rounded-2xl border border-stone-200 bg-white">
                 {sources.map(s => (
                   <li key={s.id} className="flex items-center gap-3 px-5 py-3.5">
-                    <Badge tone="good">parsed</Badge>
+                    <Badge tone={s.status === "FAILED" ? "bad" : "good"}>{s.status}</Badge>
                     <span className="text-[13.5px] font-medium text-stone-900">{s.filename}</span>
                     <span className="tnum ml-auto text-xs text-stone-400">{s.row_count} rows</span>
                   </li>
@@ -152,7 +186,6 @@ export default function Portal() {
           <div className="mt-5 flex gap-2">
             <Link href="/workspace"><Btn>Open workspace</Btn></Link>
             <Link href="/reports"><Btn variant="ghost">View reports</Btn></Link>
-            <Btn variant="ghost" onClick={seed} disabled={!authed || seeding}>{seeding ? "Loading…" : "Load demo dataset"}</Btn>
           </div>
         </section>
       </div>
@@ -162,7 +195,7 @@ export default function Portal() {
           <MetricStrip items={[
             { label: "Sources", value: String(sources.length), sub: "files parsed" },
             { label: "Rows", value: sources.reduce((a, s) => a + (s.row_count || 0), 0).toLocaleString(), sub: "records normalized" },
-            { label: "Isolation", value: "tenant_id", sub: "enforced at API layer" },
+            { label: "Isolation", value: "tenant_id", sub: "RLS + JWT, server-enforced" },
           ]} />
         </div>
       )}

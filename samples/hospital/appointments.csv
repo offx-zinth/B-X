@@ -1,0 +1,9 @@
+appointment_id,patient_id,staff_id,duration_min,date,status
+A1001,P1,D1,20,2026-09-01,done
+A1002,P2,D2,30,2026-09-01,done
+A1003,P3,D1,20,2026-09-02,done
+A1004,P4,D3,45,2026-09-02,scheduled
+A1005,P1,D2,30,2026-09-03,done
+A1006,P5,D1,20,2026-09-03,scheduled
+A1007,P2,D3,45,2026-09-04,scheduled
+A1008,P3,D2,30,2026-09-04,done

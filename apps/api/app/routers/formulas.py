@@ -39,7 +39,10 @@ def create(b: FIn, ctx: dict = Depends(get_ctx)):
     return rec
 
 @router.get("/")
-def all(ctx: dict = Depends(get_ctx)): return list_all("formulas", ctx)
+def all(ctx: dict = Depends(get_ctx), limit: int = 200, offset: int = 0):
+    rows = list_all("formulas", ctx)
+    limit = max(1, min(int(limit or 200), 500)); offset = max(0, int(offset or 0))
+    return rows[offset:offset + limit]
 
 @router.post("/{fid}/approve")
 def approve(fid: str, ctx: dict = Depends(get_ctx)):

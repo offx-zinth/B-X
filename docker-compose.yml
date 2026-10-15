@@ -37,6 +37,7 @@ services:
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: xraypass
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       # --- AI provider (never hard-wired in application code) ---
       LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
       LLM_MODEL: ${LLM_MODEL:-gemma-4-31b-it}
@@ -44,6 +45,9 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     ports: ["8000:8000"]
+    volumes:
+      # Sample CSVs for load-sample/* through the real pipeline.
+      - ./samples:/srv/samples:ro
     depends_on:
       postgres:
         condition: service_healthy

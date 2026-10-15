@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Play } from "@phosphor-icons/react";
-import { API } from "../../lib/api";
+import { API, headers } from "../../lib/api";
 import { Card, SectionTitle, Btn, Badge, ErrorNote, EmptyState, Skeleton } from "../../components/ui";
 
 type Tpl = { name: string; changes: any[] };
@@ -23,7 +23,7 @@ export default function Sims() {
   async function run(changes?: any[], label?: string) {
     setBusy(true); setErr("");
     try {
-      const H = { Authorization: `Bearer ${localStorage.getItem("xray_token")}`, "Content-Type": "application/json" };
+      const H = { ...headers(), "Content-Type": "application/json" };
       const body = { name: label || name, changes: changes || [{ target, value: Number(value) }], duration_days: Number(days) };
       const r = await fetch(`${API}/simulations/run`, { method: "POST", headers: H, body: JSON.stringify(body) }).then(r => {
         if (!r.ok) throw new Error("Simulation failed");

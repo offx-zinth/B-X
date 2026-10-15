@@ -1,0 +1,9 @@
+ticket_id,customer_id,agent_id,created_date,resolution_hours,status
+T1001,C1,A1,2026-09-01,6,resolved
+T1002,C2,A2,2026-09-01,30,open
+T1003,C3,A1,2026-09-02,4,resolved
+T1004,C4,A3,2026-09-02,50,open
+T1005,C1,A2,2026-09-03,8,resolved
+T1006,C2,A1,2026-09-03,72,open
+T1007,C5,A3,2026-09-04,5,resolved
+T1008,C3,A2,2026-09-04,26,open

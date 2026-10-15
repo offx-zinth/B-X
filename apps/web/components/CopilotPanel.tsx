@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { PaperPlaneRight } from "@phosphor-icons/react";
-import { API } from "../lib/api";
+import { API, headers } from "../lib/api";
 import { Btn, ErrorNote, Badge } from "./ui";
 
 type Msg = { role: "user" | "ai"; text: string; detail?: any };
@@ -72,8 +72,9 @@ export default function CopilotPanel({ onGraphRefresh }: { onGraphRefresh?: () =
     setBusy(true); setErr("");
     setLog(l => [...l, { role: "user", text: q }]);
     try {
-      const H = { Authorization: `Bearer ${localStorage.getItem("xray_token")}`, "Content-Type": "application/json" };
+      const H = { ...headers(), "Content-Type": "application/json" };
       const r = await fetch(`${API}/ai/ask`, { method: "POST", headers: H, body: JSON.stringify({ question: q }) }).then(r => {
+        if (r.status === 401 && typeof window !== "undefined") window.location.href = "/login";
         if (!r.ok) throw new Error("Copilot request failed");
         return r.json();
       });
@@ -84,7 +85,7 @@ export default function CopilotPanel({ onGraphRefresh }: { onGraphRefresh?: () =
   }
 
   async function approveFormula(id: string) {
-    const H = { Authorization: `Bearer ${localStorage.getItem("xray_token")}` };
+    const H = headers();
     await fetch(`${API}/formulas/${id}/approve`, { method: "POST", headers: H });
     onGraphRefresh?.();
     setLog(l => [...l, { role: "ai", text: `Formula approved and active in the graph.` }]);

@@ -31,13 +31,27 @@ def create_node(b: NodeIn, ctx: dict = Depends(get_ctx)):
     RBAC.require(_user(ctx), "graph.write")
     if not b.type.strip() or not b.name.strip():
         raise HTTPException(400, "type and name required")
-    rec = insert("nodes", ctx, {**b.model_dump(), "level": "USER_DEFINED",
+    try:
+        from ..core.ontology import normalize_kind
+        kind = normalize_kind((b.properties or {}).get("kind", "Entity"))
+    except Exception:
+        kind = "Entity"
+    props = dict(b.properties or {}); props["kind"] = kind
+    rec = insert("nodes", ctx, {**b.model_dump(), "properties": props, "level": "USER_DEFINED",
                                 "provenance": [prov.attach("console", method="manual", level="USER_DEFINED")]})
     auditlog.record(ctx, "graph.node.create", f"node:{rec['id']}", after={"type": b.type, "name": b.name})
+    try:
+        from ..services import graph_mirror as _mirror
+        _mirror.mirror_node(ctx.get("tenant_id", ""), rec)
+    except Exception:
+        pass
     return rec
 
 @router.get("/nodes")
-def nodes(ctx: dict = Depends(get_ctx)): return list_all("nodes", ctx)
+def nodes(ctx: dict = Depends(get_ctx), limit: int = 200, offset: int = 0):
+    rows = list_all("nodes", ctx)
+    limit = max(1, min(int(limit or 200), 500)); offset = max(0, int(offset or 0))
+    return rows[offset:offset + limit]
 
 @router.get("/nodes/{node_id}")
 def get_node(node_id: str, ctx: dict = Depends(get_ctx)):
@@ -63,14 +77,29 @@ def update_node(node_id: str, b: NodePatch, ctx: dict = Depends(get_ctx)):
 def create_edge(b: EdgeIn, ctx: dict = Depends(get_ctx)):
     RBAC.require(_user(ctx), "graph.write")
     if not get("nodes", ctx, b.source_node) or not get("nodes", ctx, b.target_node): raise HTTPException(400, "unknown node")
-    rec = insert("edges", ctx, {**b.model_dump(), "level": "USER_DEFINED"})
+    try:
+        from ..core.ontology import validate_edge_type, classify_edge
+        etype = validate_edge_type(b.type)
+        family = classify_edge(etype)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    rec = insert("edges", ctx, {**b.model_dump(), "type": etype, "level": "USER_DEFINED",
+                                "properties": {**(b.properties or {}), "family": family}})
     auditlog.record(ctx, "graph.edge.create", f"edge:{rec['id']}",
-                     after={"source": b.source_node, "target": b.target_node, "type": b.type})
+                     after={"source": b.source_node, "target": b.target_node, "type": etype})
     ver.snapshot(ctx, source="graph.edge.create")
+    try:
+        from ..services import graph_mirror as _mirror
+        _mirror.mirror_edge(ctx.get("tenant_id", ""), rec)
+    except Exception:
+        pass
     return rec
 
 @router.get("/edges")
-def edges(ctx: dict = Depends(get_ctx)): return list_all("edges", ctx)
+def edges(ctx: dict = Depends(get_ctx), limit: int = 500, offset: int = 0):
+    rows = list_all("edges", ctx)
+    limit = max(1, min(int(limit or 500), 1000)); offset = max(0, int(offset or 0))
+    return rows[offset:offset + limit]
 
 @router.get("/impact/{node_id}")
 def impact(node_id: str, ctx: dict = Depends(get_ctx)):
@@ -87,6 +116,12 @@ def trace(source: str, target: str, ctx: dict = Depends(get_ctx)):
     if not get("nodes", ctx, source) or not get("nodes", ctx, target):
         raise HTTPException(404, "unknown node")
     return comp.trace_path(source, target, list_all("edges", ctx))
+
+
+@router.get("/ontology")
+def ontology(ctx: dict = Depends(get_ctx)):
+    from ..core.ontology import describe
+    return describe()
 
 @router.get("/versions")
 def versions(ctx: dict = Depends(get_ctx)): return ver.list_versions(ctx)

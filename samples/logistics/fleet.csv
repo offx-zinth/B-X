@@ -1,0 +1,4 @@
+vehicle_id,name,capacity_kg,available,utilization
+V1,Ashok Leyland 14ft,2000,2000,78
+V2,Tata Ace,1200,1200,64
+V3,Mini Truck,800,800,55

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Space_Grotesk, Inter, JetBrains_Mono } from "next/font/google";
 import TopNav from "../components/TopNav";
+import { AuthProvider } from "../lib/auth";
 import "./globals.css";
 
 const display = Space_Grotesk({ subsets: ["latin"], variable: "--font-display", weight: ["500", "600", "700"] });
@@ -19,8 +20,10 @@ export default function Root({ children }: { children: React.ReactNode }) {
         <a href="#content" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[60] focus:rounded focus:bg-pine-700 focus:px-3 focus:py-2 focus:text-white">
           Skip to content
         </a>
-        <TopNav />
-        <div id="content">{children}</div>
+        <AuthProvider>
+          <TopNav />
+          <div id="content">{children}</div>
+        </AuthProvider>
       </body>
     </html>
   );

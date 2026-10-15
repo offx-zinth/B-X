@@ -52,8 +52,40 @@ tenant with the reference supplier-failure scenario.
 ```
 Web        http://localhost:3000
 API docs   http://localhost:8000/docs
-Login      demo@acme.co / secret123
+Login      /login (demo@acme.co / secret123)
+Signup     /signup (provisions a fresh isolated tenant as Owner)
 ```
+
+### Sample businesses
+
+Six executable verticals share the same 14-primitive engine — no per-industry
+forks. Each has real sample CSVs under `samples/<business>/` plus a one-click
+seed and a real-pipeline loader (parse → IR → compile → formulas).
+
+| Business | Seed | Real-pipeline load | Sample files |
+|---|---|---|---|
+| Manufacturing | `POST /ingest/seed/manufacturing` | `POST /ingest/load-sample/manufacturing` | `samples/*.csv` |
+| Tea shop | `POST /ingest/seed/tea_shop` | `POST /ingest/load-sample/tea_shop` | `samples/tea_shop/` |
+| Hospital | `POST /ingest/seed/hospital` | `POST /ingest/load-sample/hospital` | `samples/hospital/` |
+| Logistics | `POST /ingest/seed/logistics` | `POST /ingest/load-sample/logistics` | `samples/logistics/` |
+| SaaS support | `POST /ingest/seed/saas` | `POST /ingest/load-sample/saas` | `samples/saas/` |
+| Retail | `POST /ingest/seed/retail` | `POST /ingest/load-sample/retail` | `samples/retail/` |
+
+`GET /ingest/sample-catalog` lists all six for the frontend Data page.
+`POST /ingest/seed/{business}` merges (never clobbers) and snapshots a graph
+version; `POST /ingest/load-sample/{business}` proves heterogeneous CSV
+exports compile into one graph. Locked in by
+`apps/api/tests/test_sample_businesses.py`.
+
+### Auth (multi-tenant, production)
+
+JWT (`tenant_id` + `sub`) on every request (`app/core/tenant.py:6`), RBAC
+Owner/Admin/Analyst/Viewer (`app/core/roles.py:13`), Postgres Row Level
+Security as defence in depth (`app/core/store.py`). Frontend uses
+`lib/auth.tsx` session provider with `/login` + `/signup`, TopNav org/role
+display + logout, 401 → `/login` redirect, and role-aware UI. Per-tenant
+context: `GET /auth/tenant`. List endpoints paginate (`limit`/`offset`,
+capped) so large tenants stay responsive.
 
 `start.sh` commands:
 
@@ -155,14 +187,29 @@ independent and can be extracted to a service when scale demands it.
 
 ```
 apps/api/app/
-  core/        store (Postgres+memory), tenant guard, security/JWT, roles (RBAC),
-               audit, versions (immutable graph snapshots), observability
+  core/        store (Postgres+memory), ontology (14 primitives), tenant guard,
+               security/JWT, roles (RBAC), audit, versions, observability
   services/    ingestion → ir (discovery + normalization) → compiler (IR→graph)
-               formula_engine (BFL) → simulation (layered solver) → ai_orchestrator
-               provenance, seed
+               formula_engine (BFL + strict units) → simulation (layered solver)
+               forecast (pluggable registry) → ai_orchestrator
+               provenance, seed (factory + tea shop), graph_mirror (Neo4j)
   routers/     auth, ingest, graph, formulas, simulations, ai, dashboard,
                reports, system
 ```
+
+## Universal ontology (14 primitives, general for every business)
+
+Single source of truth: `apps/api/app/core/ontology.py`, `packages/bir/schema.json:5-19`.
+
+- Operational nodes (7): `ENTITY · RESOURCE · ACTOR · PROCESS · TASK · EVENT · TRANSACTION`
+- Relationships (2): `DEPENDENCY · FLOW` (+ `USES PRODUCES CONSUMES PERFORMED_BY TRIGGERS`)
+- Properties/rules (5): `STATE · CAPACITY · CONSTRAINT · TIME · COST`
+
+Domain vocabularies are config, never code branches (`manufacturing`, `tea_shop`,
+`office`, `logistics`). A tea shop (`Cup, MilkStock, Brewer, Brew, Sale`) and a
+factory (`Supplier, Material, Machine, Production, Order`) compile to the same
+executable graph. Legacy kinds (`Metric, Location, Decision`) normalize on read.
+`GET /graph/ontology`, `GET /ontology`, `describe_ontology` tool expose it.
 
 ## The engines (all deterministic, all tested)
 
@@ -171,7 +218,9 @@ A controlled expression language — **no arbitrary Python/JS is ever executed**
 Recursive-descent parser over a whitelist: `SUM AVG MIN MAX IF ABS ROUND COUNT
 RATE DELTA CLAMP`. References are `Type.property` (and `prev.Type.property` for
 cross-day stocks). Missing refs resolve to `0.0` with an explicit warning —
-values are never invented. Returns `{value, dependencies, trace, errors,
+values are never invented. Strict unit checking blocks known incompatibilities
+(`lead_time + revenue` → `unit mismatch`) while unknown units stay permissive
+so legacy formulas keep working. Returns `{value, dependencies, trace, errors,
 warnings}`. Grammar: `packages/bfl/README.md`.
 
 ### Dependency + simulation engine
@@ -188,12 +237,22 @@ return absolute + percentage change, time-to-impact, and maximum impact.
 get_dependents · trace_path · find_affected_nodes · find_upstream ·
 find_downstream · dependency_closure`, plus immutable graph versioning. Every
 mutation snapshots a new version; simulations pin a `base_graph_version`.
+Postgres is the system of record; Neo4j (`apps/api/app/services/graph_mirror.py`)
+is a best-effort traversal mirror — the app works without it.
+
+### Forecasting (pluggable, LLM-invoked)
+`apps/api/app/services/forecast.py` registry + `forecast`, `list_forecast_models`
+tools. A forecaster estimates what may happen; simulation evaluates consequences.
+Forecast output feeds `run_simulation` inputs (e.g. demand forecast → arrival_rate).
+Baseline `moving_average` works with no history; custom models register by name,
+version, inputs/outputs, metrics.
 
 ## AI layer — tools, not chat
 
-The copilot is a real tool-calling agent over 18 audited, tenant-scoped tools
+The copilot is a real tool-calling agent over 21 audited, tenant-scoped tools
 (`query_graph`, `find_dependencies`, `explain_simulation`, `run_simulation`,
-`get_metric`, `find_bottlenecks`, `suggest_optimization`, …). It is not a chat
+`get_metric`, `find_bottlenecks`, `suggest_optimization`, `forecast`,
+`describe_ontology`, …). It is not a chat
 wrapper: the model can only learn facts by calling tools, and every call is
 written to the audit log.
 
@@ -241,14 +300,20 @@ graph. Every fact carries provenance and a lifecycle level —
 `CONFIRMED · INFERRED · USER_DEFINED · AI_SUGGESTED`. Inferred data is never
 presented as confirmed.
 
-## Reference scenario (Acme Manufacturing)
-`Supplier.capacity=0 for 14 days` propagates deterministically through
-`Supplier → Material → Production → Order → Revenue`: production capacity
-collapses to 0, fulfillable orders to 0, backlog rises to full demand, revenue
-to 0 — and the copilot explains what changed, which nodes were affected, when,
-why (citing the exact formula), which metrics moved, the binding constraint,
-and candidate interventions. Locked in by
+## Reference scenarios (same engine, different businesses)
+Factory (Acme Manufacturing): `Supplier.capacity=0 for 14 days` propagates
+deterministically through `Supplier → Material → Production → Order → Revenue`:
+production capacity collapses to 0, fulfillable orders to 0, backlog rises to
+full demand, revenue to 0 — and the copilot explains what changed, which nodes
+were affected, when, why (citing the exact formula), which metrics moved, the
+binding constraint, and candidate interventions. Locked in by
 `apps/api/tests/test_reference_scenario.py`.
+
+Tea shop (generality proof): `MilkSupplier.capacity=0 for 7 days` propagates
+through `MilkSupplier → MilkStock → Brew → TeaSale → TeaRevenue` with the same
+solver — `TeaSale.fulfillable` and `TeaRevenue.total` collapse to 0. Seed via
+`POST /ingest/seed-tea-shop`. Locked in by
+`apps/api/tests/test_universal_ontology.py`.
 
 ## What is deliberately not faked
 Ingestion, IR discovery, graph compilation, formula evaluation, dependency

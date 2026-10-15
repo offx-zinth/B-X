@@ -159,3 +159,9 @@ def call_tool(name: str, b: ToolArgs, ctx: dict = Depends(get_ctx)):
     if name not in ai_tools.tool_names():
         return {"error": f"unknown tool {name}", "tools": ai_tools.tool_names()}
     return ai_tools.invoke(name, b.args, ctx)
+
+
+@router.get("/forecast-models")
+def forecast_models(ctx: dict = Depends(get_ctx)):
+    from ..services import forecast as fc
+    return {"models": fc.list_models()}

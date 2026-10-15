@@ -6,7 +6,11 @@ from __future__ import annotations
 import re
 
 ID_RE = re.compile(r"^(.*)_id$", re.I)
-PRIMITIVES = ["Entity","Resource","Actor","Process","Event","State","Transaction","Dependency"]
+# Single source of truth lives in app/core/ontology.py. This mirror keeps the
+# discovery engine importable without the API package (tests, offline runs).
+PRIMITIVES = ["Entity", "Resource", "Actor", "Process", "Task", "Event", "Transaction",
+              "Dependency", "Flow", "State", "Capacity", "Constraint", "Time", "Cost"]
+NODE_KINDS = ["Entity", "Resource", "Actor", "Process", "Task", "Event", "Transaction"]
 
 # ---- Canonical property normalization -------------------------------------
 # Industry exports name the same business fact differently ("capacity_kg",
@@ -92,6 +96,40 @@ def classify_column(col: str) -> str:
     if any(k in c for k in ("email","phone","address","location","name")): return "attribute"
     return "attribute"
 
+def _kind_for_type(rtype: str) -> str:
+    """General business-type -> core node kind. Domain-agnostic.
+
+    Uses ontology domain maps first (tea shop and factory share the same
+    lookup), then generic name heuristics. Unknown vocabularies fall back to
+    Entity so unseen businesses stay executable.
+    """
+    try:
+        from ..core.ontology import kind_for as _onto_kind
+        mapped = _onto_kind(rtype)
+        if mapped != "ENTITY":
+            return {"ENTITY": "Entity", "RESOURCE": "Resource", "ACTOR": "Actor",
+                    "PROCESS": "Process", "TASK": "Task", "EVENT": "Event",
+                    "TRANSACTION": "Transaction"}.get(mapped, "Entity")
+    except Exception:
+        pass
+    low = rtype.lower()
+    if any(k in low for k in ("customer", "employee", "supplier", "user", "brewer",
+                              "staff", "team", "vendor", "agent", "manager", "operator")):
+        return "Actor"
+    if any(k in low for k in ("product", "material", "inventory", "machine", "stock",
+                              "milk", "sugar", "cup", "ingredient", "equipment", "resource")):
+        return "Resource"
+    if any(k in low for k in ("order", "payment", "invoice", "sale", "purchase", "transaction")):
+        return "Transaction"
+    if any(k in low for k in ("brew", "serve", "approv", "task", "ticket", "review", "fulfill")):
+        return "Task"
+    if any(k in low for k in ("rush", "outage", "delay", "arrival", "event")):
+        return "Event"
+    if any(k in low for k in ("production", "brewing", "fulfillment", "workflow", "process", "line")):
+        return "Process"
+    return "Entity"
+
+
 def detect_ir(table_name: str, columns: list[str], rows: list[dict], source_doc: str) -> dict:
     """Returns versioned {version, nodes:[IRNode], edges:[IREdge], stats}.
 
@@ -111,13 +149,23 @@ def detect_ir(table_name: str, columns: list[str], rows: list[dict], source_doc:
         if m: refs.append((col, m.group(1).capitalize().rstrip("s") or "Entity"))
     # emit referenced entity types as IR node types (dedup later at compile)
     for _, rtype in refs:
-        nodes.setdefault(rtype, {"type": rtype, "examples": [], "kind": "Actor" if rtype in ("Customer","Employee","Supplier","User") else ("Resource" if rtype in ("Product","Material","Inventory","Machine") else "Entity")})
-    nodes.setdefault(record_type, {"type": record_type, "examples": rows[:3], "kind": "Transaction" if record_type in ("Order","Payment","Invoice") else "Entity"})
+        nodes.setdefault(rtype, {"type": rtype, "examples": [], "kind": _kind_for_type(rtype)})
+    nodes.setdefault(record_type, {"type": record_type, "examples": rows[:3], "kind": _kind_for_type(record_type)})
     # relationships: RefType --verb--> RecordType (skip self-loops: a file
     # describing Suppliers is not evidence that a Supplier supplies itself)
     for col, rtype in refs:
         if rtype == record_type: continue
-        verb = {"customer":"places","product":"contains","employee":"handled_by","supplier":"supplied_by"}.get(rtype.lower(), "relates_to")
+        low = rtype.lower()
+        if "customer" in low or "buyer" in low:
+            verb = "places"
+        elif "supplier" in low or "vendor" in low:
+            verb = "supplies"
+        elif any(k in low for k in ("employee", "brewer", "staff", "team", "agent")):
+            verb = "handled_by"
+        elif any(k in low for k in ("product", "material", "ingredient", "milk", "sugar", "cup")):
+            verb = "contains"
+        else:
+            verb = {"customer":"places","product":"contains","employee":"handled_by","supplier":"supplied_by"}.get(low, "relates_to")
         edges.append({"source_type": rtype, "target_type": record_type, "type": verb, "via": col})
     # measures become properties of record, normalized onto canonical slots so
     # heterogeneous exports ("capacity_kg", "lead_time_days") compile into one

@@ -1,0 +1,4 @@
+product_id,name,avg_value,available,required_per_unit
+P1,Cutting Chai Cup,15,500,1
+P2,Filter Coffee,20,300,1
+P3,Masala Chai,25,200,1

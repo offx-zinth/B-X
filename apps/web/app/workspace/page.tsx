@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { ArrowClockwise } from "@phosphor-icons/react";
-import { API, XNode } from "../../lib/api";
+import { API, XNode, headers } from "../../lib/api";
 import GraphCanvas from "../../components/GraphCanvas";
 import CopilotPanel from "../../components/CopilotPanel";
 import { Badge, Btn, ErrorNote, Skeleton } from "../../components/ui";
@@ -21,7 +21,7 @@ function SimulateFromNode({ node }: { node: XNode }) {
     const target = `${node.type}.${prop || firstProp}`;
     const r = await fetch(`${API}/simulations/run`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${localStorage.getItem("xray_token")}`, "Content-Type": "application/json" },
+      headers: { ...headers(), "Content-Type": "application/json" },
       body: JSON.stringify({ name: `Change ${target}`, changes: [{ target, value: Number(val) }], duration_days: 14 }),
     }).then(r => r.json()).catch(() => null);
     if (r?.result?.deltas) {
@@ -54,7 +54,7 @@ export default function Workspace() {
   const [editing, setEditing] = useState<string | null>(null);
   const [editExpr, setEditExpr] = useState("");
 
-  const H = () => ({ Authorization: `Bearer ${localStorage.getItem("xray_token")}` });
+  const H = () => headers();
 
   const load = useCallback(async () => {
     setErr("");
