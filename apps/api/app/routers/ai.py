@@ -49,6 +49,12 @@ def ask(b: Ask, ctx: dict = Depends(get_ctx)):
     causal explanation. If no LLM is configured the deterministic path runs —
     the product never depends on the model being present.
     """
+    from ..core import ratelimit as _rl
+    if b.use_llm and not _rl.allow(ctx.get("tenant_id", "")):
+        # Over budget: deterministic fallback cascade instead of a 429.
+        return {**_deterministic_answer(b.question, ctx), "degraded": True,
+                "rate_limited": True,
+                "note": "LLM budget exceeded for this tenant; deterministic answer returned."}
     if not b.use_llm or not b.question.strip():
         return _deterministic_answer(b.question, ctx)
 
@@ -142,11 +148,37 @@ def _enrich(question: str, ctx: dict) -> dict:
     return out
 
 
+@router.get("/search/semantic")
+def search_semantic(q: str, k: int = 10, ctx: dict = Depends(get_ctx)):
+    """Semantic node search: pgvector when available, in-memory fallback.
+
+    Deterministic hash embeddings (no network) rank nodes by cosine distance
+    to the query. Content-addressed index refresh keeps repeat queries cheap.
+    """
+    from ..services import search as sem
+    nodes = list_all("nodes", ctx)
+    return {"query": q, "hits": sem.search(ctx, q, nodes, k=max(1, min(k, 50)))}
+
+
 @router.post("/optimize")
 def optimize(b: Ask, ctx: dict = Depends(get_ctx)):
     out = ai.optimize(ctx, b.question)
     auditlog.record(ctx, "ai.optimize", "ai:optimize", after={"goal": b.question})
     return out
+
+
+@router.post("/ask/stream")
+def ask_stream(b: Ask, ctx: dict = Depends(get_ctx)):
+    """Server-Sent Events: streams reasoning steps, tool calls, answer deltas."""
+    from fastapi.responses import StreamingResponse
+    import json as _json
+
+    def _gen():
+        for ev in ai_agent.ask_stream(ctx, b.question, selected_node_id=b.selected_node_id):
+            yield f"data: {_json.dumps(ev, default=str)}\n\n"
+    auditlog.record(ctx, "ai.ask.stream", "ai:copilot", after={"question": b.question[:200]})
+    return StreamingResponse(_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.get("/report")

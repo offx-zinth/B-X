@@ -15,7 +15,7 @@ import time
 from ...core import versions as ver
 from ...core.store import list_all
 from .. import llm
-from ..llm.base import LLMResponse, ToolCall
+from ..llm.base import LLMResponse
 from . import tools as tool_registry
 
 REF_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\.([a-z_][A-Za-z0-9_]*)\b")
@@ -41,9 +41,18 @@ HOW TO WORK
 - Prefer explain_simulation for "what happens if" questions: it returns the full causal chain."""
 
 
-def build_context(ctx: dict, question: str, max_nodes: int | None = None) -> dict:
-    """Bounded, graph-aware context. Never the whole graph."""
+def build_context(ctx: dict, question: str, max_nodes: int | None = None,
+                  selected_node_id: str = "") -> dict:
+    """Bounded, hybrid graph-aware context. Never the whole graph.
+
+    Hybrid retrieval:
+    - Exact structural context: 1-hop and 2-hop neighbors of the selected node.
+    - Semantic vector search over node descriptions (pgvector-compatible,
+      in-memory fallback) for graphs too large to rank lexically.
+    - Lexical ranking for the remainder (keyword overlap).
+    """
     from ...core.config import settings
+    from .. import search as sem
     limit = max_nodes or settings.LLM_MAX_CONTEXT_NODES
     nodes = list_all("nodes", ctx)
     formulas = list_all("formulas", ctx)
@@ -51,16 +60,48 @@ def build_context(ctx: dict, question: str, max_nodes: int | None = None) -> dic
     ql = (question or "").lower()
     terms = {w for w in re.findall(r"[a-z]{3,}", ql)}
 
+    semantic_scores: dict[str, float] = {}
+    if len(nodes) > limit:
+        for hit in sem.search(ctx, question, nodes, k=limit):
+            semantic_scores[hit["id"]] = float(hit.get("score", 0))
+
+    structural_ids: set[str] = set()
+    if selected_node_id:
+        adj: dict[str, set[str]] = {}
+        for e in edges:
+            s, t = e.get("source_node"), e.get("target_node")
+            if s and t:
+                adj.setdefault(s, set()).add(t)
+                adj.setdefault(t, set()).add(s)
+        hop1 = adj.get(selected_node_id, set())
+        hop2: set[str] = set()
+        for nid in hop1:
+            hop2.update(adj.get(nid, set()))
+        structural_ids = ({selected_node_id} | hop1 | hop2) - {selected_node_id}
+        # cap structural expansion so a hub node cannot blow the budget
+        structural_ids = set(list(structural_ids)[:limit])
+
     def relevance(n):
         score = 0
         hay = f"{n.get('type','')} {n.get('name','')}".lower()
         for t in terms:
             if t in hay:
                 score += 1
+        score += semantic_scores.get(n.get("id", ""), 0.0) * 5
+        if n.get("id") in structural_ids:
+            score += 10  # structural exact match outranks lexical
         return score
 
     ranked = sorted(nodes, key=relevance, reverse=True)
     keep = ranked[:limit]
+    # Guarantee structural neighbors are included even with low lexical score.
+    if structural_ids:
+        by_id = {n["id"]: n for n in nodes}
+        for sid in structural_ids:
+            if sid in by_id and all(k["id"] != sid for k in keep):
+                if len(keep) >= limit:
+                    keep = keep[:-1]
+                keep.append(by_id[sid])
     ids = {n["id"] for n in keep}
     return {
         "tenant": ctx.get("tenant_id"),
@@ -128,7 +169,7 @@ def ask(ctx: dict, question: str, selected_node_id: str = "",
     client = llm.build_client()
     rounds_cap = max_rounds or settings.LLM_MAX_TOOL_ROUNDS
     specs = tool_registry.registry()
-    context = build_context(ctx, question)
+    context = build_context(ctx, question, selected_node_id=selected_node_id)
 
     user_msg = {
         "role": "user",
@@ -219,9 +260,16 @@ def ask(ctx: dict, question: str, selected_node_id: str = "",
                                                        "ungrounded_refs": [],
                                                        "cited_refs": [], "grounded_refs": []}
     if not grounding["fully_grounded"] and answer:
-        answer = (answer + "\n\n[Grounding notice: the following references were not found in "
-                  "tool results and are excluded: "
-                  + ", ".join(grounding["ungrounded_refs"]) + "]")
+        # Programmatic guardrail: redact ungrounded sentences before delivery,
+        # then disclose what was removed (hallucinated text never ships as fact).
+        redacted, removed = _redact_ungrounded(answer, grounding["ungrounded_refs"])
+        if redacted.strip():
+            answer = redacted + ("\n\n[Grounding: removed ungrounded references: "
+                                 + ", ".join(removed) + "]" if removed else "")
+        else:
+            answer = (answer + "\n\n[Grounding notice: the following references were not found in "
+                      "tool results and are excluded: "
+                      + ", ".join(grounding["ungrounded_refs"]) + "]")
 
     return {
         "answer": answer or "Unable to answer from the available graph data.",
@@ -288,6 +336,34 @@ def _sanitize(text: str) -> str:
     cleaned = _META_RE.sub("", text)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned or text.strip()
+
+
+def _redact_ungrounded(answer: str, ungrounded: list[str]) -> tuple[str, list[str]]:
+    """Drop sentences citing ungrounded refs. Returns (redacted, removed_refs)."""
+    if not ungrounded:
+        return answer, []
+    sentences = re.split(r"(?<=[.!?])\s+", answer or "")
+    kept, removed = [], []
+    for s in sentences:
+        bad = [r for r in ungrounded if r in s]
+        if bad:
+            removed.extend(bad)
+            continue
+        kept.append(s)
+    return " ".join(kept).strip(), sorted(set(removed))
+
+
+def ask_stream(ctx: dict, question: str, selected_node_id: str = ""):
+    """SSE-friendly generator: yields reasoning steps, tool calls, then answer."""
+    res = ask(ctx, question, selected_node_id=selected_node_id)
+    yield {"type": "step", "steps": res.get("steps", [])}
+    for t in res.get("tool_calls", []):
+        yield {"type": "tool", "tool": t.get("tool"), "summary": t.get("summary", "")[:300]}
+    answer = res.get("answer", "")
+    for i in range(0, len(answer), 500):
+        yield {"type": "answer", "delta": answer[i:i + 500]}
+    yield {"type": "grounding", "grounding": res.get("grounding", {})}
+    yield {"type": "done", "provider": res.get("provider"), "model": res.get("model")}
 
 
 def _compose_from_trace(trace: list[dict], facts: set[str],

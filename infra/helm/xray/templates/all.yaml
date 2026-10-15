@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-api
+  labels: { app: xray-api }
+spec:
+  replicas: {{ .Values.replicaCount.api }}
+  selector: { matchLabels: { app: xray-api } }
+  template:
+    metadata: { labels: { app: xray-api } }
+    spec:
+      containers:
+        - name: api
+          image: {{ .Values.image.api }}
+          ports: [{ containerPort: 8000 }]
+          env:
+            - { name: DATABASE_URL, value: {{ .Values.env.databaseUrl | quote }} }
+            - { name: REDIS_URL, value: {{ .Values.env.redisUrl | quote }} }
+            - { name: XRAY_READ_MODE, value: {{ .Values.env.readMode | quote }} }
+            - { name: CLAMAV_HOST, value: {{ .Values.env.clamavHost | quote }} }
+            - { name: ALLOWED_ORIGINS, value: {{ .Values.env.allowedOrigins | quote }} }
+            - name: JWT_SECRET
+              valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-secrets, key: jwt-secret } }
+          resources: {{ .Values.resources.api | toJson | nindent 12 }}
+          livenessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 15, periodSeconds: 30 }
+          readinessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 5, periodSeconds: 10 }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: {{ .Release.Name }}-api }
+spec:
+  selector: { app: xray-api }
+  ports: [{ port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-worker
+  labels: { app: xray-worker }
+spec:
+  replicas: {{ .Values.replicaCount.worker }}
+  selector: { matchLabels: { app: xray-worker } }
+  template:
+    metadata: { labels: { app: xray-worker } }
+    spec:
+      containers:
+        - name: worker
+          image: {{ .Values.image.api }}
+          command: ["celery", "-A", "app.worker", "worker",
+                    "-Q", "ingest.parse,ingest.compile,sim.compute",
+                    "-c", "4", "--loglevel=INFO"]
+          env:
+            - { name: DATABASE_URL, value: {{ .Values.env.databaseUrl | quote }} }
+            - { name: REDIS_URL, value: {{ .Values.env.redisUrl | quote }} }
+            - { name: XRAY_READ_MODE, value: {{ .Values.env.readMode | quote }} }
+            - name: JWT_SECRET
+              valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-secrets, key: jwt-secret } }
+          resources: {{ .Values.resources.worker | toJson | nindent 12 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-web
+  labels: { app: xray-web }
+spec:
+  replicas: {{ .Values.replicaCount.web }}
+  selector: { matchLabels: { app: xray-web } }
+  template:
+    metadata: { labels: { app: xray-web } }
+    spec:
+      containers:
+        - name: web
+          image: {{ .Values.image.web }}
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: NEXT_PUBLIC_API_URL, value: {{ printf "http://%s-api:8000" .Release.Name | quote }} }
+          livenessProbe: { httpGet: { path: /, port: 3000 }, initialDelaySeconds: 15, periodSeconds: 30 }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: {{ .Release.Name }}-web }
+spec:
+  selector: { app: xray-web }
+  ports: [{ port: 3000, targetPort: 3000 }]
+{{- if .Values.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-web
+  annotations: { nginx.ingress.kubernetes.io/proxy-body-size: 100m }
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: {{ .Release.Name }}-web, port: { number: 3000 } } }
+{{- end }}

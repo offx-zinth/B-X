@@ -19,11 +19,12 @@ class NodePatch(BaseModel):
 
 
 def _user(ctx: dict) -> dict:
-    from ..core.store import scan
-    for u in scan("users"):
-        if u.get("id") == ctx.get("user_id"):
-            return u
-    return {"role": "Viewer"}
+    from ..core.store import get_user
+    from fastapi import HTTPException
+    u = get_user(ctx.get("tenant_id", ""), ctx.get("user_id", ""))
+    if not u:
+        raise HTTPException(401, "unknown user")
+    return u
 
 
 @router.post("/nodes")
@@ -104,7 +105,8 @@ def edges(ctx: dict = Depends(get_ctx), limit: int = 500, offset: int = 0):
 @router.get("/impact/{node_id}")
 def impact(node_id: str, ctx: dict = Depends(get_ctx)):
     if not get("nodes", ctx, node_id): raise HTTPException(404, "node not found")
-    return comp.full_impact(node_id, list_all("edges", ctx))
+    from ..services import traversal as trav
+    return trav.full_impact(node_id, ctx.get("tenant_id", ""), list_all("edges", ctx))
 
 @router.get("/neighbors/{node_id}")
 def neighbors(node_id: str, ctx: dict = Depends(get_ctx)):

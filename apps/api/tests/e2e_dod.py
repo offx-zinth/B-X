@@ -40,7 +40,7 @@ def main():
     #    typed entities AND relationships, not one opaque node.
     ord_csv = (b"order_id,customer_id,supplier_id,product_id,quantity,price\n"
                b"O1,C1,S1,P1,40,120\nO2,C2,S1,P2,60,85\n")
-    up2 = c.post("/ingest/upload", files={"f": ("orders.csv", ord_csv, "text/csv")}, headers=H).json()
+    c.post("/ingest/upload", files={"f": ("orders.csv", ord_csv, "text/csv")}, headers=H)
     nodes = c.get("/graph/nodes", headers=H).json()
     types = {n["type"] for n in nodes}
     edges = c.get("/graph/edges", headers=H).json()

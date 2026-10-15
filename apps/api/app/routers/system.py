@@ -24,6 +24,13 @@ def metrics():
     return {"store_backend": backend(), "neo4j_mirror": neo, **obs.snapshot()}
 
 
+@router.get("/metrics/prometheus")
+def metrics_prometheus():
+    from fastapi.responses import Response as _Resp
+    data, ctype = obs.prometheus_bytes()
+    return _Resp(content=data, media_type=ctype)
+
+
 @router.get("/ontology")
 def ontology():
     from ..core.ontology import describe

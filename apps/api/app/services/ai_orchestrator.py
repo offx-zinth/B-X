@@ -157,6 +157,13 @@ def find_affected_nodes(ctx, node_id: str) -> dict:
     return find_dependencies(ctx, node_id)
 
 
+def search_semantic(ctx, query: str) -> list[dict]:
+    """Semantic node search (pgvector-compatible, in-memory fallback)."""
+    from ..core.store import list_all
+    from . import search as sem
+    return sem.search(ctx, query, list_all("nodes", ctx))
+
+
 def live_model(ctx) -> dict:
     """Resolve the whole live model: node properties + approved formula outputs."""
     from ..core.store import list_all

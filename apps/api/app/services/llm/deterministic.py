@@ -7,7 +7,6 @@ output only. Used when no API key is configured, in tests, and as the
 guaranteed fallback if a live provider errors mid-run.
 """
 from __future__ import annotations
-import re
 from .base import LLMClient, LLMResponse, ToolCall, ToolSpec
 
 

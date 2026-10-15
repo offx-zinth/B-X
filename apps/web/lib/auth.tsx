@@ -46,18 +46,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (s) {
         localStorage.setItem(KEY, JSON.stringify(s));
         localStorage.setItem("xray_token", s.token);
+        // Non-HttpOnly companion cookie: lets edge middleware see the session
+        // before render. Real authority stays the HttpOnly access_token.
+        document.cookie = "xray_session=1; path=/; SameSite=Lax; Max-Age=604800";
       } else {
         localStorage.removeItem(KEY);
         localStorage.removeItem("xray_token");
+        document.cookie = "xray_session=; path=/; Max-Age=0";
       }
     }
   };
 
   const refresh = useCallback(async () => {
     const s = readStored();
-    if (!s?.token) { setLoading(false); return; }
+    if (!s?.token) {
+      // No localStorage session: maybe a valid HttpOnly cookie session exists.
+      try {
+        const me = await fetch(`${API}/auth/me`, { credentials: "include" }).then(async r => {
+          if (!r.ok) throw new Error("no cookie session");
+          return r.json();
+        });
+        persist({ token: "", tenant_id: me.tenant_id, email: me.email, role: me.role });
+      } catch {
+        persist(null);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
     try {
       const me = await fetch(`${API}/auth/me`, {
+        credentials: "include",
         headers: { Authorization: `Bearer ${s.token}` },
       }).then(async r => {
         if (r.status === 401) throw new Error("session expired");
@@ -65,6 +84,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return r.json();
       });
       const tenant = await fetch(`${API}/auth/tenant`, {
+        credentials: "include",
         headers: { Authorization: `Bearer ${s.token}` },
       }).then(r => (r.ok ? r.json() : null)).catch(() => null);
       persist({ token: s.token, tenant_id: me.tenant_id, email: me.email, role: me.role, org: tenant?.name });
@@ -80,12 +100,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = useCallback(async (email: string, password: string) => {
     setError("");
     const r = await fetch(`${API}/auth/login`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
     });
     if (!r.ok) throw new Error(r.status === 401 ? "Invalid email or password." : await r.text());
     const j = await r.json();
     const tenant = await fetch(`${API}/auth/tenant`, {
+      credentials: "include",
       headers: { Authorization: `Bearer ${j.token}` },
     }).then(x => (x.ok ? x.json() : null)).catch(() => null);
     persist({ token: j.token, tenant_id: j.tenant_id, email, role: j.role || "Viewer", org: tenant?.name });
@@ -95,7 +116,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signup = useCallback(async (org: string, email: string, password: string) => {
     setError("");
     const r = await fetch(`${API}/auth/signup`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ org, email, password }),
     });
     if (!r.ok) throw new Error(r.status === 409 ? "Email already registered. Try logging in." : await r.text());
@@ -105,6 +126,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [router]);
 
   const logout = useCallback(() => {
+    // Revoke server-side cookies too (best effort; local state clears regardless).
+    fetch(`${API}/auth/logout`, { method: "POST", credentials: "include" }).catch(() => null);
     persist(null);
     router.push("/login");
   }, [router]);

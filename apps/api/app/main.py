@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 try:
     from slowapi import Limiter
@@ -16,6 +16,18 @@ from .core.observability import ObservabilityMiddleware
 from .core.store import backend, store_error
 from .core.config import settings
 
+# Sentry: release-tagged error monitoring when SENTRY_DSN is set (both API
+# and worker processes share this entrypoint).
+try:
+    import os as _os
+    import sentry_sdk as _sentry
+    _dsn = _os.environ.get("SENTRY_DSN", "")
+    if _dsn:
+        _sentry.init(dsn=_dsn, traces_sample_rate=float(_os.environ.get("SENTRY_TRACES", "0.1")),
+                     environment=_os.environ.get("ENV", "production"), release="xray-api@1.0.0")
+except Exception:
+    pass
+
 limiter = _LIMITER
 
 app = FastAPI(title="Business X-Ray API", version="1.0.0",
@@ -30,6 +42,7 @@ if _HAS_LIMITER:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

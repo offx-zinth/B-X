@@ -392,7 +392,7 @@ def test_answer_is_sanitized(monkeypatch, seeded):
 def test_offline_planner_reads_metrics_instead_of_proposing_formulas(seeded):
     """"What is our revenue" must READ, not create a formula."""
     c, H = seeded
-    ctx = _ctx_from(H)
+    _ = _ctx_from(H)
     from app.services.llm.deterministic import DeterministicClient
     from app.services.ai import tools as reg
     names = set(reg.tool_names())

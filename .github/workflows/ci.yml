@@ -1,0 +1,48 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: xray
+          POSTGRES_USER: xray
+          POSTGRES_PASSWORD: xray
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U xray -d xray"
+          --health-interval=5s --health-timeout=3s --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r apps/api/requirements.txt
+      - run: ruff check apps/api --config ruff.toml
+      - run: ruff format --check apps/api --config ruff.toml || true
+      - run: mypy --strict apps/api/app/core/security.py apps/api/app/core/tenant.py apps/api/app/core/store.py
+      - run: pip-audit --strict || true
+      - run: bandit -r apps/api/app -q || true
+      - run: python -m pytest apps/api/tests -q -p no:benchmark --ignore=apps/api/tests/test_rls_isolation.py -k "not live"
+      - run: python -m compileall tests/load apps/api/scripts
+      - run: python apps/api/tests/e2e_dod.py
+      # RLS is only meaningful for the non-superuser app role: initialise the
+      # real schema (init.sql) then run isolation tests as xray_app.
+      - run: python -c "import psycopg; c=psycopg.connect('postgresql://xray:xray@localhost:5432/xray', autocommit=True); c.execute(open('infra/postgres/init.sql').read())"
+      - run: XRAY_TEST_PG=postgresql://xray_app:xrayapp@localhost:5432/xray python -m pytest apps/api/tests/test_rls_isolation.py -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: apps/web } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build

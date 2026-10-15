@@ -361,3 +361,82 @@ def validate_expression(expr: str, unit_lookup: dict[str, str] | None = None) ->
         except Exception:
             deps = []
         return {"ok": False, "dependencies": deps, "error": str(e)}
+
+
+# --- Compiled BFL (two-phase engine) --------------------------------------
+# Compilation parses once into tokens + deps and caches the result, so hot
+# simulation loops avoid re-tokenizing every day. Evaluation reuses the same
+# deterministic Parser but against a pre-validated token stream.
+from functools import lru_cache
+
+
+@lru_cache(maxsize=2048)
+def _compile_cached(expr: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    toks = tuple(tokenize(expr))
+    deps = tuple(extract_refs(expr))
+    # validate eagerly so compile failures surface before simulation runs
+    v = validate_expression(expr)
+    if not v["ok"]:
+        raise ValueError(v["error"])
+    return toks, deps
+
+
+def compile(expr: str) -> dict:
+    """Parse once, evaluate many times. Returns {tokens, dependencies}."""
+    toks, deps = _compile_cached(expr)
+    return {"tokens": list(toks), "dependencies": list(deps), "expression": expr}
+
+
+def evaluate_compiled(compiled: dict, context: dict[str, float]) -> dict:
+    """Evaluate a pre-compiled expression (same semantics as evaluate_detailed)."""
+    return evaluate_detailed(compiled.get("expression", ""), context)
+
+
+def find_cycles(formulas: list[dict]) -> list[list[str]]:
+    """Tarjan's SCC over ref->target edges. Returns cyclic groups (len>1 or self-loop)."""
+    targets = [f.get("target") for f in (formulas or []) if f.get("target")]
+    index_of: dict[str, int] = {}
+    low: dict[str, int] = {}
+    on_stack: set[str] = set()
+    stack: list[str] = []
+    idx = [0]
+    sccs: list[list[str]] = []
+    adj: dict[str, list[str]] = {t: [] for t in targets}
+    target_set = set(targets)
+    for f in (formulas or []):
+        t = f.get("target")
+        if not t:
+            continue
+        for r in dependencies_of(f.get("expression", "")):
+            base = r[5:] if r.startswith("prev.") else r
+            if base in target_set and base != t:
+                adj.setdefault(base, []).append(t)
+            if base == t:
+                adj.setdefault(t, []).append(t)
+
+    def strong(v: str):
+        index_of[v] = low[v] = idx[0]
+        idx[0] += 1
+        stack.append(v)
+        on_stack.add(v)
+        for w in adj.get(v, []):
+            if w not in index_of:
+                strong(w)
+                low[v] = min(low[v], low[w])
+            elif w in on_stack:
+                low[v] = min(low[v], index_of[w])
+        if low[v] == index_of[v]:
+            comp = []
+            while True:
+                w = stack.pop()
+                on_stack.discard(w)
+                comp.append(w)
+                if w == v:
+                    break
+            if len(comp) > 1 or (len(comp) == 1 and comp[0] in adj.get(comp[0], [])):
+                sccs.append(sorted(comp))
+
+    for v in list(targets):
+        if v not in index_of:
+            strong(v)
+    return sorted(sccs)

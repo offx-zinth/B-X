@@ -1,10 +1,18 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import { ArrowClockwise } from "@phosphor-icons/react";
 import { API, XNode, headers } from "../../lib/api";
 import GraphCanvas from "../../components/GraphCanvas";
+import GraphCanvasCanvas from "../../components/GraphCanvasCanvas";
 import CopilotPanel from "../../components/CopilotPanel";
 import { Badge, Btn, ErrorNote, Skeleton } from "../../components/ui";
+
+// WebGL tier (>2k nodes) loads on demand so the core bundle stays small.
+const GraphSigma = dynamic(() => import("../../components/GraphSigma"), {
+  ssr: false,
+  loading: () => <div className="grid h-full place-items-center text-[13px] text-stone-400">Preparing WebGL renderer…</div>,
+});
 
 const TYPE_DOT: Record<string, string> = {
   Supplier: "bg-amber-600", Production: "bg-pine-700",
@@ -147,7 +155,13 @@ export default function Workspace() {
               </div>
             </div>
           ) : (
-            <GraphCanvas nodes={shown} edges={edges} selected={sel} impact={impact} onSelect={select} />
+            shown.length > 2000 ? (
+              <GraphSigma nodes={shown} edges={edges} selected={sel} onSelect={select} />
+            ) : shown.length > 300 ? (
+              <GraphCanvasCanvas nodes={shown} edges={edges} selected={sel} onSelect={select} />
+            ) : (
+              <GraphCanvas nodes={shown} edges={edges} selected={sel} impact={impact} onSelect={select} />
+            )
           )}
         </div>
 

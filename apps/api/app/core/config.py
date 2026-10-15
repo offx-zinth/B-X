@@ -9,6 +9,13 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # --- storage / graph ---
     DATABASE_URL: str = "postgresql://xray:xray@localhost:5432/xray"
+    DATABASE_POOL_SIZE: int = 20
+    DATABASE_MAX_OVERFLOW: int = 10
+    DATABASE_POOL_TIMEOUT: int = 30
+    USE_PGBOUNCER: bool = False
+    # compat (xray_store JSONB) vs normalized (relational tables). Flip after
+    # scripts/backfill_normalized.py --verify reports MISMATCH 0.
+    XRAY_READ_MODE: str = "compat"
     NEO4J_URI: str = "bolt://localhost:7687"
     NEO4J_USER: str = "neo4j"
     NEO4J_PASSWORD: str = "xraypass"
@@ -16,6 +23,20 @@ class Settings(BaseSettings):
     # --- auth ---
     JWT_SECRET: str = "dev-secret-change-me"
     JWT_ALG: str = "HS256"
+    JWT_PRIVATE_KEY: str = ""
+    JWT_PUBLIC_KEY: str = ""
+    JWT_ACCESS_MINUTES: int = 15
+    JWT_REFRESH_DAYS: int = 7
+    COOKIE_SECURE: bool = False
+    COOKIE_DOMAIN: str = ""
+
+    # --- ingest hardening / object storage ---
+    # CLAMAV_HOST unset -> scan_malware() fails open (dev/test).
+    # Production: "clamav:3310".
+    CLAMAV_HOST: str = ""
+    S3_BUCKET: str = "xray-uploads"
+    S3_ENDPOINT: str = ""
+    XRAY_SPOOL_DIR: str = "/tmp/xray-spool"
 
     # --- frontend / CORS ---
     # Comma-separated origins for production deployments behind a real domain.

@@ -153,13 +153,18 @@ All configuration is environment-based (see `.env.example`):
 | `LLM_PROVIDER` | `gemini` | `gemini` / `openai` / anything else → offline |
 | `LLM_MODEL` | `gemma-4-31b-it` | Any model the provider serves |
 | `DATABASE_URL` | local `xray_app` | **Must not** be the Postgres superuser |
+| `XRAY_READ_MODE` | `compat` | `compat` (xray_store JSONB) vs `normalized` (relational cutover) |
+| `REDIS_URL` | — | Unset → in-process jobs; set → Redis queues + Celery workers |
+| `CLAMAV_HOST` | — | Unset → scan fails open (dev); production: `clamav:3310` |
+| `XRAY_OCR_BACKEND` | — | Unset → no OCR; `tesseract` shells out for scanned PDFs |
+| `S3_BUCKET` / `S3_ENDPOINT` | `xray-uploads` | Object storage for async uploads (else local spool) |
 | `JWT_SECRET` | dev value | Change for any real deployment |
 | `API_PORT` / `WEB_PORT` | `8000` / `3000` | Service ports |
 
 ### Verify the install
 
 ```bash
-python3.11 -m pytest apps/api/tests -q     # 54 unit/integration tests
+python3.11 -m pytest apps/api/tests -q -p no:benchmark --ignore=apps/api/tests/test_rls_isolation.py -k "not live"  # 62 hermetic tests
 python3.11 apps/api/tests/e2e_dod.py       # 21-step Definition-of-Done run
 ./scripts/smoke.sh                         # 28 live checks against the running app
 ```
@@ -168,7 +173,28 @@ With a live Postgres the RLS suite also runs:
 
 ```bash
 XRAY_TEST_PG="postgresql://xray_app:xrayapp@localhost:5432/xray" \
-  python3.11 -m pytest apps/api/tests -q    # 60 tests incl. tenant-isolation proofs
+  python3.11 -m pytest apps/api/tests -q    # 68 tests incl. tenant-isolation proofs
+```
+
+### Normalized cutover (xray_store → relational)
+
+Writes dual-write to both backends from day one; reads stay on `compat`
+until you flip the flag. Checklist:
+
+```bash
+python apps/api/scripts/backfill_normalized.py --verify   # require MISMATCH 0
+XRAY_READ_MODE=normalized docker compose up -d api worker # CTE traversal + normalized reads
+# Rollback is instant: unset XRAY_READ_MODE (compat stays authoritative).
+```
+
+### Workers, scanning, load, deploys
+
+```bash
+docker compose up -d worker clamav        # Celery queues + ClamAV quarantine sidecar
+locust -f tests/load/locustfile.py --host http://localhost:8000 -u 50 -r 5 -t 5m --headless
+npx playwright test --project=chromium    # apps/web/e2e (needs live stack)
+helm install xray infra/helm/xray         # production topology (api/web/worker)
+# infra/terraform provisions RDS Postgres + ElastiCache for the Helm values.
 ```
 
 To exercise the live LLM by hand:

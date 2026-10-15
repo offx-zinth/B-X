@@ -7,7 +7,7 @@ Large files should move to background workers; this modular-monolith step
 keeps parsing bounded (10 MB / 200 sampled rows) inside the request while
 recording the same status transitions a future queue worker would emit.
 """
-from fastapi import APIRouter, UploadFile, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, Depends, HTTPException, BackgroundTasks
 from datetime import datetime, timezone
 from ..core.tenant import get_ctx
 from ..core.store import insert, list_all, update, get as sget
@@ -18,56 +18,48 @@ from ..core.observability import METRICS
 from ..services import ingestion as ing, ir as irs, compiler as comp
 from ..services import seed as seedsvc
 from ..services import provenance as prov
+from ..services import jobs as jobsvc
+import os
 import time
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 
 def _user(ctx: dict) -> dict:
-    from ..core.store import scan
-    for u in scan("users"):
-        if u.get("id") == ctx.get("user_id"):
-            return u
-    return {"role": "Viewer"}
+    from ..core.store import get_user
+    from fastapi import HTTPException
+    u = get_user(ctx.get("tenant_id", ""), ctx.get("user_id", ""))
+    if not u:
+        raise HTTPException(401, "unknown user")
+    return u
 
 
-@router.post("/upload")
-async def upload(f: UploadFile, ctx: dict = Depends(get_ctx)):
-    RBAC.require(_user(ctx), "ingest.write")
+def process_upload(ctx: dict, filename: str, raw: bytes, allow_large: bool = False) -> dict:
+    """Shared pipeline used by sync upload and async workers (same transitions)."""
     t0 = time.perf_counter()
-    raw = await f.read()
-    src = insert("data_sources", ctx, {"filename": f.filename, "kind": "file",
+    src = insert("data_sources", ctx, {"filename": filename, "kind": "file",
                                        "status": "QUEUED", "row_count": 0})
     update("data_sources", ctx, src["id"], {"status": "PROCESSING"})
     try:
-        cols, rows = ing.parse(f.filename, raw)
+        cols, rows = ing.parse(filename, raw, allow_large=allow_large)
     except Exception as e:
         update("data_sources", ctx, src["id"], {"status": "FAILED", "error": str(e)[:500]})
         auditlog.record(ctx, "ingest.failed", f"source:{src['id']}", after={"error": str(e)[:300]})
-        raise HTTPException(400, f"ingest failed (source retained for inspection): {e}")
+        raise
     update("data_sources", ctx, src["id"], {"status": "parsed", "row_count": len(rows),
                                             "columns": cols[:50]})
-    table = (f.filename.rsplit(".", 1)[0] if "." in (f.filename or "") else (f.filename or "data")).lower()
-    try:
-        ir = irs.detect_ir(table, cols, rows, f.filename)
-    except Exception as e:
-        update("data_sources", ctx, src["id"], {"status": "FAILED", "error": f"IR: {e}"[:500]})
-        raise HTTPException(400, f"schema discovery failed: {e}")
-    try:
-        compiled = comp.compile_ir(ir, ctx, insert, list_all, update)
-    except Exception as e:
-        update("data_sources", ctx, src["id"], {"status": "PARTIAL", "error": f"compile: {e}"[:500]})
-        raise HTTPException(500, f"graph compilation partially failed: {e}")
+    table = (filename.rsplit(".", 1)[0] if "." in (filename or "") else (filename or "data")).lower()
+    ir = irs.detect_ir(table, cols, rows, filename)
+    compiled = comp.compile_ir(ir, ctx, insert, list_all, update)
     now = datetime.now(timezone.utc).isoformat()
     for n in compiled["nodes"]:
         cur = sget("nodes", ctx, n["id"]) or n
         docs = list(cur.get("source_docs") or ([cur.get("source_doc")] if cur.get("source_doc") else []))
-        if f.filename not in docs:
-            docs.append(f.filename)
+        if filename not in docs:
+            docs.append(filename)
         history = list(cur.get("provenance") or [])
-        history.append(prov.attach(f.filename, row=f"rows:{len(rows)}", confidence=0.9,
+        history.append(prov.attach(filename, row=f"rows:{len(rows)}", confidence=0.9,
                                   level="INFERRED", method="column-classification"))
-        # Never downgrade a CONFIRMED / USER_DEFINED node back to INFERRED.
         level = cur.get("level")
         if level not in ("CONFIRMED", "USER_DEFINED"):
             level = "INFERRED"
@@ -76,16 +68,120 @@ async def upload(f: UploadFile, ctx: dict = Depends(get_ctx)):
                                        "level": level})
     status = "COMPLETED" if compiled["nodes"] else "PARTIAL"
     update("data_sources", ctx, src["id"], {"status": status})
-    snap = ver.snapshot(ctx, source=f"ingest:{f.filename}")
+    snap = ver.snapshot(ctx, source=f"ingest:{filename}")
     METRICS["ingestions"] += 1
     METRICS["ingest_ms"] += int((time.perf_counter() - t0) * 1000)
     auditlog.record(ctx, "ingest.completed", f"source:{src['id']}",
-                     after={"file": f.filename, "nodes": len(compiled["nodes"]),
+                     after={"file": filename, "nodes": len(compiled["nodes"]),
                             "edges": len(compiled["edges"]), "version": snap.get("version")})
     return {"source": {**src, "status": status}, "columns": cols, "ir": ir,
             "graph": {"nodes": len(compiled["nodes"]), "edges": len(compiled["edges"]),
                       "version": snap.get("version")},
-            "stats": f"discovered {len(compiled['nodes'])} types, {len(compiled['edges'])} rels from {f.filename}"}
+            "stats": f"discovered {len(compiled['nodes'])} types, {len(compiled['edges'])} rels from {filename}"}
+
+
+def _persist_blob(object_key: str, raw: bytes) -> bool:
+    """Object storage write: S3/MinIO when configured, local spool otherwise."""
+    if not object_key:
+        return False
+    try:
+        import boto3
+        bucket = os.environ.get("S3_BUCKET", "xray-uploads")
+        s3 = boto3.client("s3", endpoint_url=os.environ.get("S3_ENDPOINT") or None)
+        s3.put_object(Bucket=bucket, Key=object_key, Body=raw)
+        return True
+    except Exception:
+        pass
+    try:
+        spool = os.environ.get("XRAY_SPOOL_DIR", "/tmp/xray-spool")
+        os.makedirs(spool, exist_ok=True)
+        with open(os.path.join(spool, os.path.basename(object_key)), "wb") as fh:
+            fh.write(raw)
+        return True
+    except Exception:
+        return False
+
+
+def _run_job(job_id: str, ctx: dict, filename: str, raw: bytes) -> None:
+    try:
+        jobsvc.mark(ctx, job_id, {"status": "PROCESSING", "progress": 10}, update, sget)
+        out = process_upload(ctx, filename, raw, allow_large=True)
+        jobsvc.mark(ctx, job_id, {"status": "COMPLETED", "progress": 100,
+                                  "result": {"source_id": out["source"]["id"],
+                                             "graph": out["graph"]}}, update, sget)
+    except Exception as e:
+        try:
+            jobsvc.mark(ctx, job_id, {"status": "FAILED", "error": str(e)[:500]}, update, sget)
+        except Exception:
+            pass
+
+
+@router.post("/upload")
+async def upload(f: UploadFile, ctx: dict = Depends(get_ctx)):
+    RBAC.require(_user(ctx), "ingest.write")
+    raw = await f.read()
+    infected = ing.scan_malware(raw)
+    if infected:
+        raise HTTPException(400, f"upload quarantined by malware scanner: {infected[:120]}")
+    try:
+        return process_upload(ctx, f.filename, raw)
+    except ValueError as e:
+        raise HTTPException(400, f"ingest failed (source retained for inspection): {e}")
+    except Exception as e:
+        raise HTTPException(500, f"graph compilation partially failed: {e}")
+
+
+@router.post("/upload-async")
+async def upload_async(f: UploadFile, background: BackgroundTasks, ctx: dict = Depends(get_ctx)):
+    """Decoupled upload: returns a job id immediately; worker processes the blob.
+
+    [Client] POST /upload-async -> [API records job + blob] -> [Worker queue
+    ingest.parse] -> WebSocket/SSE or poll GET /ingest/jobs/{id}.
+    """
+    RBAC.require(_user(ctx), "ingest.write")
+    raw = await f.read()
+    try:
+        ing.validate(f.filename, raw, allow_large=True)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    infected = ing.scan_malware(raw)
+    if infected:
+        raise HTTPException(400, f"upload quarantined by malware scanner: {infected[:120]}")
+    job = jobsvc.create_job(ctx, "ingest.parse", f.filename, len(raw), insert)
+    payload = {"job_id": job["id"], "tenant_id": ctx["tenant_id"],
+               "filename": f.filename, "size": len(raw)}
+    object_key = f"uploads/{job['id']}"
+    _persist_blob(object_key, raw)
+    queued = jobsvc.enqueue("ingest.parse", payload)
+    if queued:
+        # Distributed worker path (Celery consumes ingest.parse tasks).
+        try:
+            from ..worker import ingest_parse
+            ingest_parse.delay({**payload, "object_key": object_key})
+        except Exception:
+            pass
+        jobsvc.mark(ctx, job["id"], {"queue": "ingest.parse", "status": "QUEUED"}, update, sget)
+    else:
+        # No broker: run in-process background task (same status transitions).
+        background.add_task(_run_job, job["id"], dict(ctx), f.filename, raw)
+    return {"job_id": job["id"], "status": "QUEUED", "queue": "ingest.parse",
+            "poll": f"/ingest/jobs/{job['id']}"}
+
+
+@router.get("/jobs")
+def jobs(ctx: dict = Depends(get_ctx), limit: int = 50):
+    rows = list_all("ingest_jobs", ctx)
+    rows.sort(key=lambda r: r.get("created_at", 0), reverse=True)
+    return rows[:max(1, min(int(limit or 50), 200))]
+
+
+@router.get("/jobs/{jid}")
+def job_one(jid: str, ctx: dict = Depends(get_ctx)):
+    j = sget("ingest_jobs", ctx, jid)
+    if not j:
+        raise HTTPException(404, "job not found")
+    return j
+
 
 @router.get("/sources")
 def sources(ctx: dict = Depends(get_ctx), limit: int = 100, offset: int = 0):

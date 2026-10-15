@@ -1,0 +1,30 @@
+# Default values for the Business X-Ray chart.
+replicaCount:
+  api: 2
+  web: 2
+  worker: 2
+
+image:
+  api: xray-api:latest
+  web: xray-web:latest
+
+env:
+  databaseUrl: "postgresql://xray:xray@postgres:5432/xray"
+  redisUrl: "redis://redis:6379/0"
+  readMode: compat          # flip to "normalized" after backfill --verify is clean
+  clamavHost: ""            # production: "clamav:3310"
+  allowedOrigins: "https://app.example.com"
+
+resources:
+  api: { requests: { cpu: 250m, memory: 512Mi }, limits: { cpu: "1", memory: 1Gi } }
+  worker: { requests: { cpu: 500m, memory: 1Gi }, limits: { cpu: "2", memory: 2Gi } }
+
+ingress:
+  enabled: true
+  className: nginx
+  host: app.example.com
+
+postgresql:
+  enabled: true   # set false when using managed RDS (see infra/terraform)
+redis:
+  enabled: true   # set false when using ElastiCache

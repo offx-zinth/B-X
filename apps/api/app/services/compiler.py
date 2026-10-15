@@ -1,6 +1,5 @@
 """Graph Compiler: Business IR -> executable operational graph (nodes/edges + dependency graph)."""
 from __future__ import annotations
-from . import formula_engine as bfl
 
 try:
     from ..core.ontology import normalize_kind as _norm_kind, validate_edge_type as _validate_edge

@@ -167,6 +167,81 @@ CREATE TABLE IF NOT EXISTS reports (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Durable job records (mirror of the compat ingest_jobs collection).
+CREATE TABLE IF NOT EXISTS ingest_jobs (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  kind TEXT,
+  filename TEXT,
+  size BIGINT,
+  status TEXT,
+  queue TEXT,
+  progress INT DEFAULT 0,
+  error TEXT,
+  result JSONB,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ingest_jobs_tenant ON ingest_jobs(tenant_id, created_at DESC);
+
+-- ---------- Outbox (Neo4j mirror worker) ----------
+-- Defined before the role/RLS loops: every table must exist before it is
+-- handed to xray_app and covered by row-level security.
+CREATE TABLE IF NOT EXISTS outbox_events (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  tenant_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  claimed_at TIMESTAMPTZ,
+  done_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_claim ON outbox_events (claimed_at, done_at, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_formulas_tenant_target ON formulas (tenant_id, target)
+  WHERE status = 'approved';
+
+-- ---------- Compat store (migration window) ----------
+-- Kept in sync with the application's DDL (app/core/store.py
+-- _ensure_schema) so a fresh database is fully initialised by this file
+-- alone; the app is still the source of truth for enabling RLS on it.
+CREATE TABLE IF NOT EXISTS xray_store (
+  collection TEXT NOT NULL,
+  id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  data JSONB NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (collection, id)
+);
+CREATE INDEX IF NOT EXISTS idx_xray_tenant ON xray_store (collection, tenant_id);
+
+-- Transitional index while xray_store is still the compat backend:
+-- indexed login lookup instead of full scan("users").
+CREATE INDEX IF NOT EXISTS idx_xray_users_email ON xray_store ((lower(data->>'email')))
+  WHERE collection = 'users';
+
+-- ---------- Semantic index (pgvector) ----------
+-- Best effort: managed databases without the extension skip this block; the
+-- app then uses its in-memory embedding index (app/services/search.py).
+DO $$
+BEGIN
+  CREATE EXTENSION IF NOT EXISTS vector;
+  CREATE TABLE IF NOT EXISTS node_embeddings (
+    tenant_id TEXT NOT NULL,
+    node_id UUID NOT NULL,
+    content_hash TEXT NOT NULL,
+    embedding vector(256) NOT NULL,
+    PRIMARY KEY (tenant_id, node_id)
+  );
+  BEGIN
+    CREATE INDEX IF NOT EXISTS idx_node_embeddings_ivfflat
+      ON node_embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+  EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'ivfflat index skipped (pgvector too old?): %', SQLERRM;
+  END;
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'pgvector unavailable, semantic search falls back to in-memory index';
+END $$;
+
 -- ---------- Application role ----------
 -- The POSTGRES_USER is a SUPERUSER, and superusers bypass RLS even with
 -- FORCE. The API therefore connects as a dedicated non-superuser role so
@@ -188,7 +263,7 @@ DECLARE t TEXT;
 BEGIN
   FOREACH t IN ARRAY ARRAY['tenants','users','data_sources','nodes','edges','node_states',
                            'formulas','graph_versions','scenarios','simulation_runs',
-                           'audit_log','reports']
+                           'audit_log','reports','ingest_jobs','outbox_events','xray_store']
   LOOP
     EXECUTE format('ALTER TABLE %I OWNER TO xray_app', t);
   END LOOP;
@@ -206,7 +281,7 @@ DECLARE t TEXT;
 BEGIN
   FOREACH t IN ARRAY ARRAY['nodes','edges','formulas','data_sources','graph_versions',
                            'scenarios','simulation_runs','audit_log','reports',
-                           'node_states','users']
+                           'node_states','users','ingest_jobs','outbox_events','xray_store']
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);

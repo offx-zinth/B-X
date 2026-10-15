@@ -52,9 +52,17 @@ def _order_and_split(formulas: list[dict]) -> tuple[list[dict], list[dict]]:
     functions of upstream flow inputs and converge within a single pass.
 
     Returns (flow, stock) with the acyclic flow graph topologically ordered
-    (Kahn) and any flow-cycle remainder appended deterministically.
+    (Kahn) and any flow-cycle remainder appended deterministically. Cyclic
+    groups are identified with Tarjan SCC for the caller to report.
     """
     formulas = [f for f in (formulas or []) if f.get("target")]
+    # Pre-compile once per run: validates + warms the token cache so the
+    # day loop never re-tokenizes. Invalid formulas surface here, not mid-run.
+    for f in formulas:
+        try:
+            bfl.compile(f.get("expression", ""))
+        except Exception:
+            pass
     stock, flow = [], []
     for f in formulas:
         refs = set(bfl.dependencies_of(f.get("expression", "")))
@@ -87,7 +95,8 @@ def _order_and_split(formulas: list[dict]) -> tuple[list[dict], list[dict]]:
     return ordered_flow, stock
 
 
-def _evaluate_layer(formulas: list[dict], ctx: dict, sim_nodes: list[dict]) -> dict:
+def _evaluate_layer(formulas: list[dict], ctx: dict, sim_nodes: list[dict],
+                      by_type: dict[str, list[dict]] | None = None) -> dict:
     """Evaluate one acyclic layer once, committing values to ctx + node props."""
     detail: dict[str, dict] = {}
     for f in formulas:
@@ -98,29 +107,62 @@ def _evaluate_layer(formulas: list[dict], ctx: dict, sim_nodes: list[dict]) -> d
         ctx[target] = v
         if "." in target:
             t, p = target.split(".", 1)
-            for n in sim_nodes:
-                if n["type"] == t:
-                    n.setdefault("properties", {})[p] = v
+            # Type-indexed writes: O(matching) instead of O(all nodes) per formula.
+            targets = (by_type.get(t) if by_type else None)
+            if targets is None:
+                targets = [n for n in sim_nodes if n.get("type") == t]
+            for n in targets:
+                n.setdefault("properties", {})[p] = v
         detail[target] = {"value": v, "trace": ev["trace"],
                           "warnings": ev["warnings"], "error": ev["error"]}
     return detail
 
 
+def _solve_cycles(cyclic: list[dict], ctx: dict,
+                  by_type: dict[str, list[dict]], max_iterations: int = 50,
+                  tolerance: float = 1e-5) -> dict:
+    """Damped Jacobi fixpoint for cyclic flow groups (equilibrium, not single pass)."""
+    detail: dict[str, dict] = {}
+    for _ in range(max_iterations):
+        max_delta = 0.0
+        for f in cyclic:
+            target = f["target"]
+            ev = bfl.evaluate_detailed(f.get("expression", ""), ctx)
+            v = float(ev["value"] if not ev["error"] else 0.0)
+            old = float(ctx.get(target, 0.0))
+            nv = 0.6 * v + 0.4 * old  # DAMPING
+            max_delta = max(max_delta, abs(nv - old))
+            ctx[target] = nv
+            if "." in target:
+                t, p = target.split(".", 1)
+                for n in by_type.get(t, []):
+                    n.setdefault("properties", {})[p] = nv
+            detail[target] = {"value": nv, "trace": ev["trace"],
+                              "warnings": ev["warnings"], "error": ev["error"]}
+        if max_delta < tolerance:
+            break
+    return detail
+
+
 def _step_day(scen_ctx: dict, flow: list[dict], stock: list[dict],
-              sim_nodes: list[dict], prev_ctx: dict) -> dict:
+              sim_nodes: list[dict], prev_ctx: dict,
+              by_type: dict[str, list[dict]] | None = None,
+              cyclic: list[dict] | None = None) -> dict:
     """Advance one day: steady-state flow pass, then stock using prev-day reads.
 
     Flow formulas (no self-reference) are topologically ordered and converge in
     a single pass. Stock formulas read ``prev.<ref>`` for their own target and
     upstream stocks, so one day of depletion is applied exactly once — no
-    oscillation, fully deterministic.
+    oscillation, fully deterministic. Cyclic flow groups iterate to equilibrium.
     """
-    detail = _evaluate_layer(flow, scen_ctx, sim_nodes)
+    detail = _evaluate_layer(flow, scen_ctx, sim_nodes, by_type)
+    if cyclic:
+        detail.update(_solve_cycles(cyclic, scen_ctx, by_type or {}))
     if stock:
         stock_ctx = dict(scen_ctx)
         for k, v in prev_ctx.items():
             stock_ctx[f"prev.{k}"] = v
-        detail.update(_evaluate_layer(stock, stock_ctx, sim_nodes))
+        detail.update(_evaluate_layer(stock, stock_ctx, sim_nodes, by_type))
     return detail
 
 
@@ -147,7 +189,6 @@ def run(nodes: list[dict], edges: list[dict], formulas: list[dict],
     changes, parameters}. ``timeline`` is the t0..tn daily series; ``steps``
     is kept as an alias for backward compatibility.
     """
-    sim_nodes = copy.deepcopy(nodes or [])
     eff_formulas = list(formulas or [])
     if formula_overrides:
         ov = {f.get("target"): f for f in formula_overrides if f.get("target")}
@@ -157,25 +198,44 @@ def run(nodes: list[dict], edges: list[dict], formulas: list[dict],
                 eff_formulas.append(f)
 
     flow, stock = _order_and_split(eff_formulas)
+    # Tarjan SCC: report cyclic groups explicitly instead of silently appending.
+    try:
+        cycles = bfl.find_cycles(eff_formulas)
+    except Exception:
+        cycles = []
+    cyclic_targets = {t for grp in cycles for t in grp}
+    cyclic = [f for f in flow if f.get("target") in cyclic_targets]
+    flow_acyclic = [f for f in flow if f.get("target") not in cyclic_targets]
 
     def _run_horizon(changes: list[dict], days: int) -> tuple[dict, list[dict], dict]:
         """Shared engine for baseline and scenario — one code path, so the
         comparison can never diverge because of different evaluation logic."""
         work = copy.deepcopy(nodes or [])
         _apply_changes(work, changes)
+        by_type: dict[str, list[dict]] = {}
+        for n in work:
+            by_type.setdefault(n.get("type", ""), []).append(n)
         ctx = build_context(work)
         prev = {k: v for k, v in ctx.items() if isinstance(v, (int, float))}
         series: list[dict] = []
+        sparse: list[dict] = []
+        prev_snap: dict = {}
         first_impact: dict[str, int] = {}
         max_impact: dict[str, float] = {}
         for day in range(days):
-            detail = _step_day(ctx, flow, stock, work, prev)
+            detail = _step_day(ctx, flow_acyclic, stock, work, prev, by_type, cyclic)
             snap = {k: v for k, v in ctx.items()}
             snap["_day"] = day
             series.append(snap)
+            # Sparse delta compression: only changed keys per day (S_t+1 diff).
+            delta = {k: v for k, v in snap.items() if prev_snap.get(k) != v}
+            delta["_day"] = day
+            sparse.append(delta)
+            prev_snap = snap
             prev = {k: v for k, v in ctx.items() if isinstance(v, (int, float))}
             _ = detail
-        return ctx, series, {"first_impact": first_impact, "max_impact": max_impact}
+        return ctx, series, {"first_impact": first_impact, "max_impact": max_impact,
+                             "sparse": sparse}
 
     # Baseline: unmodified graph, same solver.
     horizon = max(1, int(duration_days or steps or 1))
@@ -200,9 +260,11 @@ def run(nodes: list[dict], edges: list[dict], formulas: list[dict],
         "time_to_impact_days": first_impact_day,
         "maximum_impact": max_impact,
         "horizon_days": horizon,
+        "cycles": cycles,
     }
     return {"baseline": baseline_full, "scenario": dict(scen_ctx),
             "deltas": deltas, "steps": timeline, "timeline": timeline,
+            "timeline_sparse": meta.get("sparse", []),
             "comparison": comparison, "changes": changes or [],
             "parameters": {"duration_days": horizon,
                            "base_graph_version": base_graph_version,

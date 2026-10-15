@@ -17,11 +17,12 @@ class FEdit(BaseModel):
 
 
 def _user(ctx: dict) -> dict:
-    from ..core.store import scan
-    for u in scan("users"):
-        if u.get("id") == ctx.get("user_id"):
-            return u
-    return {"role": "Viewer"}
+    from ..core.store import get_user
+    from fastapi import HTTPException
+    u = get_user(ctx.get("tenant_id", ""), ctx.get("user_id", ""))
+    if not u:
+        raise HTTPException(401, "unknown user")
+    return u
 
 
 @router.post("/")

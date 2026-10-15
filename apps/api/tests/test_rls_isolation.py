@@ -26,12 +26,29 @@ from app.core import store  # noqa: E402
 def pg():
     os.environ["DATABASE_URL"] = PG_URL
     store._CONN = None
+    if hasattr(store, "_POOL"):
+        try:
+            if store._POOL is not None:
+                store._POOL.close()
+        except Exception:
+            pass
+        store._POOL = None
     store._LAST_TRY = 0.0
-    conn = store._connect()
-    if conn is None:
+    pool = store._connect()
+    if pool is None:
         pytest.skip(f"postgres unreachable: {store.store_error()}")
-    yield conn
-    store._CONN = None
+    # pool-aware: check out one raw connection for direct RLS assertions
+    try:
+        from psycopg_pool import ConnectionPool as _CP
+        if isinstance(pool, _CP):
+            with pool.connection() as conn:
+                yield conn
+        else:
+            yield pool
+    finally:
+        store._CONN = None
+        if hasattr(store, "_POOL"):
+            store._POOL = None
 
 
 def _ctx():

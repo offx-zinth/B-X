@@ -1,7 +1,7 @@
 import sys; sys.path.insert(0, "apps/api")
 from fastapi.testclient import TestClient
 from app.main import app
-from app.core.store import clear, list_all
+from app.core.store import clear
 
 def _client():
     clear()

@@ -15,9 +15,11 @@ Hard rules enforced here:
 from __future__ import annotations
 from ...core import audit as auditlog
 from ...core import roles as RBAC
-from ...core.store import scan
 from ...services import ai_orchestrator as impl
 from ...services.llm.base import ToolSpec
+from .schemas import (schema_of, QueryGraphArgs, InspectNodeArgs, TracePathArgs,
+                      GetMetricArgs, ExplainSimArgs, CreateFormulaArgs,
+                      ValidateFormulaArgs, CreateScenarioArgs)
 
 # ---------------------------------------------------------------- registry --
 
@@ -71,42 +73,81 @@ def tool_names() -> list[str]:
 
 def invoke(name: str, args: dict, ctx: dict) -> dict:
     """Execute a tool under the caller's authorization, and audit it."""
+    import time as _t
+    from ...core.observability import observe_llm_tool
     spec = _REGISTRY.get(name)
     if spec is None:
         return {"error": f"unknown tool '{name}'", "available": tool_names()}
     args = args or {}
     if not isinstance(args, dict):
         return {"error": "tool arguments must be an object"}
+    # Prompt-injection defense: tool params are data, never queries to execute.
+    problem = _sanitize_args(name, args)
+    if problem:
+        return {"error": problem}
+    t0 = _t.perf_counter()
     try:
         result = spec.fn(ctx=ctx, **args)
     except TypeError as e:
         return {"error": f"invalid arguments for {name}: {e}"}
     except Exception as e:  # never leak a traceback to the model
         return {"error": f"{name} failed: {type(e).__name__}: {e}"}
+    finally:
+        try:
+            observe_llm_tool(name, "orchestrator", _t.perf_counter() - t0)
+        except Exception:
+            pass
     auditlog.record(ctx, "ai.tool_call", f"ai:{name}",
                     metadata={"args_keys": sorted(args.keys()), "ok": "error" not in result})
     return result
 
 
+_REF_RE = None
+
+
+def _sanitize_args(name: str, args: dict) -> str | None:
+    """Reject input-escaping / arbitrary-query attempts in tool arguments."""
+    import re
+    global _REF_RE
+    if _REF_RE is None:
+        _REF_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
+    # Hard caps keep context bounded even if the model rambles.
+    if len(str(args)) > 8000:
+        return "arguments too large"
+    for k, v in args.items():
+        if isinstance(v, str) and len(v) > 2000:
+            return f"argument '{k}' too long"
+        if isinstance(v, str) and ("\n\n" in v and ("ignore" in v.lower() or "system" in v.lower())):
+            return f"argument '{k}' looks like prompt injection"
+    if name in ("get_metric",):
+        ref = str(args.get("ref", ""))
+        if ref and not _REF_RE.match(ref) and not ref.startswith("prev."):
+            return f"ref must be Type.property, got '{ref[:80]}'"
+    if name in ("validate_formula",):
+        expr = str(args.get("expression", ""))
+        if ";" in expr or "`" in expr or "$" in expr:
+            return "expression contains disallowed characters"
+    return None
+
+
 def _user(ctx: dict) -> dict:
-    for u in scan("users"):
-        if u.get("id") == ctx.get("user_id"):
-            return u
-    return {"role": "Viewer"}
+    from ...core.store import get_user
+    u = get_user(ctx.get("tenant_id", ""), ctx.get("user_id", ""))
+    if not u:
+        return {"role": "Viewer"}
+    return u
 
 
 # ------------------------------------------------------------- read tools --
 
 @tool("query_graph", "Find graph nodes whose type or name matches a query. Use this to locate entities before asking about them.",
-      {"type": "object", "properties": {"q": {"type": "string", "description": "search text"}}, "required": ["q"]})
+      schema_of(QueryGraphArgs))
 def query_graph(ctx: dict, q: str):
     return impl.query_graph(ctx, q)
 
 
 @tool("inspect_node", "Get one node with its properties, provenance, edges and related formulas. Provide node_id when known, otherwise node_type.",
-      {"type": "object", "properties": {
-          "node_id": {"type": "string", "description": "exact node id"},
-          "node_type": {"type": "string", "description": "node type when node_id is unknown, e.g. 'Supplier'"}}})
+      schema_of(InspectNodeArgs))
 def inspect_node(ctx: dict, node_id: str = "", node_type: str = ""):
     nid = node_id
     if not nid and node_type:
@@ -142,16 +183,13 @@ def find_affected_nodes(ctx: dict, node_id: str):
 
 
 @tool("trace_path", "Shortest causal path between two nodes in the graph.",
-      {"type": "object", "properties": {
-          "source": {"type": "string"}, "target": {"type": "string"}},
-       "required": ["source", "target"]})
+      schema_of(TracePathArgs))
 def trace_path(ctx: dict, source: str, target: str):
     return impl.trace_path(ctx, source, target)
 
 
 @tool("get_metric", "Current value of a single Type.property metric in the live graph. Reports 'not available' if the graph has no such reference.",
-      {"type": "object", "properties": {"ref": {"type": "string", "description": "e.g. Revenue.total"}},
-       "required": ["ref"]})
+      schema_of(GetMetricArgs))
 def get_metric(ctx: dict, ref: str):
     return impl.get_metric(ctx, ref)
 
@@ -191,11 +229,7 @@ def generate_report(ctx: dict):
 
 
 @tool("explain_simulation", "Run a scenario and return the full causal explanation (what changed, what was affected, when, why, metrics, bottleneck, interventions).",
-      {"type": "object", "properties": {
-          "changes": {"type": "array", "items": {"type": "object", "properties": {
-              "target": {"type": "string"}, "value": {"type": "number"}}, "required": ["target", "value"]}},
-          "duration_days": {"type": "integer", "description": "1..365, default 14"}},
-       "required": ["changes"]})
+      schema_of(ExplainSimArgs))
 def explain_simulation(ctx: dict, changes: list, duration_days: int = 14):
     res = impl.run_simulation(ctx, changes or [], duration_days=int(duration_days or 14))
     expl = impl.explain_simulation(ctx, changes or [], res)
@@ -207,7 +241,7 @@ def explain_simulation(ctx: dict, changes: list, duration_days: int = 14):
 # These NEVER mutate production rules. Outputs require explicit human approval.
 
 @tool("create_formula", "Propose a business formula from a natural-language goal. Returns a PENDING proposal that a human must approve before it affects anything.",
-      {"type": "object", "properties": {"goal": {"type": "string"}}, "required": ["goal"]},
+      schema_of(CreateFormulaArgs),
       action="formula.write")
 def create_formula(ctx: dict, goal: str):
     RBAC.require(_user(ctx), "formula.write")
@@ -219,18 +253,13 @@ def create_formula(ctx: dict, goal: str):
 
 
 @tool("validate_formula", "Dry-run a formula against the live graph: dependencies, sample value, trace, warnings. Nothing is persisted.",
-      {"type": "object", "properties": {"target": {"type": "string"}, "expression": {"type": "string"}},
-       "required": ["target", "expression"]})
+      schema_of(ValidateFormulaArgs))
 def validate_formula(ctx: dict, target: str, expression: str):
     return impl.validate_formula(ctx, target, expression)
 
 
 @tool("create_scenario", "Create a DRAFT scenario definition. Running it is a separate, explicit step.",
-      {"type": "object", "properties": {
-          "name": {"type": "string"},
-          "changes": {"type": "array", "items": {"type": "object"}},
-          "duration_days": {"type": "integer"}},
-       "required": ["name"]},
+      schema_of(CreateScenarioArgs),
       action="simulation.write")
 def create_scenario(ctx: dict, name: str, changes: list = None, duration_days: int = 14):
     RBAC.require(_user(ctx), "simulation.write")
