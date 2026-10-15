@@ -1,11 +1,13 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../lib/auth";
 import { Card, Btn, ErrorNote } from "../../components/ui";
 
 export default function Signup() {
-  const { signup } = useAuth();
+  const { signup, session, loading } = useAuth();
+  const router = useRouter();
   const [org, setOrg] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -13,12 +15,25 @@ export default function Signup() {
   const [busy, setBusy] = useState(false);
   const input = "w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-[14px]";
 
+  // Already signed in -> don't offer a second org signup, go home.
+  useEffect(() => {
+    if (!loading && session) router.replace("/");
+  }, [loading, session, router]);
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true); setErr("");
     try { await signup(org.trim(), email.trim(), password); }
     catch (e: any) { setErr(e.message || "Signup failed"); }
     finally { setBusy(false); }
+  };
+
+  if (loading || session) {
+    return (
+      <main className="mx-auto max-w-md px-6 pb-20 pt-16">
+        <p className="text-sm text-stone-500">{session ? "Already signed in — taking you home…" : "Checking session…"}</p>
+      </main>
+    );
   }
 
   return (

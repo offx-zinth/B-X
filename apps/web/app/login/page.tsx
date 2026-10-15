@@ -1,16 +1,23 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../lib/auth";
 import { Card, Btn, ErrorNote } from "../../components/ui";
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, session, loading } = useAuth();
+  const router = useRouter();
   const [email, setEmail] = useState("demo@acme.co");
   const [password, setPassword] = useState("secret123");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const input = "w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-[14px]";
+
+  // Already signed in (session in nav) -> don't show the form, go home.
+  useEffect(() => {
+    if (!loading && session) router.replace("/");
+  }, [loading, session, router]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -18,6 +25,14 @@ export default function Login() {
     try { await login(email.trim(), password); }
     catch (e: any) { setErr(e.message || "Login failed"); }
     finally { setBusy(false); }
+  };
+
+  if (loading || session) {
+    return (
+      <main className="mx-auto max-w-md px-6 pb-20 pt-16">
+        <p className="text-sm text-stone-500">{session ? "Already signed in — taking you home…" : "Checking session…"}</p>
+      </main>
+    );
   }
 
   return (
